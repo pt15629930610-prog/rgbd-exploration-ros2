@@ -10,6 +10,19 @@ from camera_processing.frontier_planner import (
 
 
 class PlannerTests(unittest.TestCase):
+    def test_only_measured_free_start_can_exit_margin(self):
+        grid = np.zeros((80, 80), dtype=np.int8)
+        grid[:, 20] = 100
+        start = (40, 31)
+        baseline = traversable(grid, .05)
+        walk = traversable(grid, .05, start)
+        self.assertFalse(baseline[start])
+        self.assertTrue(walk[start])
+        self.assertEqual(np.count_nonzero(baseline != walk), 1)
+        self.assertFalse(traversable(grid, .05, (40, 30))[40, 30])
+        grid[start] = -1
+        self.assertFalse(traversable(grid, .05, start)[start])
+
     def test_two_rooms_and_doorway(self):
         grid = np.zeros((62, 82), dtype=np.int8)
         grid[[0, -1], :] = 100

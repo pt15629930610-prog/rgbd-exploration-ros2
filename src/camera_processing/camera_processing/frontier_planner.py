@@ -16,7 +16,7 @@ CARDINAL = ((-1, 0), (1, 0), (0, -1), (0, 1))
 DIAGONAL = ((-1, -1), (-1, 1), (1, -1), (1, 1))
 
 
-def traversable(grid, resolution):
+def traversable(grid, resolution, start=None):
     radius = math.ceil(CLEARANCE_M / resolution)
     occupied = np.pad(grid >= 50, radius, constant_values=True)
     height, width = grid.shape
@@ -26,7 +26,16 @@ def traversable(grid, resolution):
             if dx * dx + dy * dy <= radius * radius:
                 y, x = radius + dy, radius + dx
                 blocked |= occupied[y:y + height, x:x + width]
-    return (grid == 0) & ~blocked
+    walk = (grid == 0) & ~blocked
+    # Pose quantization or new observations can place the robot one cell
+    # inside the planning margin. Connect only its measured free cell to a
+    # cardinal free neighbour; keep the footprint clearance even at startup.
+    if start is not None and inside(walk, start) and not walk[start] and grid[start] == 0:
+        y, x = start
+        if CLEARANCE_M - resolution >= 0.45:
+            walk[start] = any(inside(walk, (y+dy, x+dx)) and walk[y+dy, x+dx]
+                              for dy, dx in CARDINAL)
+    return walk
 
 
 def frontiers(grid):

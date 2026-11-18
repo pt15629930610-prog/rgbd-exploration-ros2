@@ -27,11 +27,23 @@ class ScanFeedbackTests(unittest.TestCase):
         self.assertEqual(self.scan.sweep, 0.0)
         self.scan.command.assert_called_with()
 
-    def test_translation_during_turn(self):
-        self.scan.pose = (0.18, 0.12, 0.1)
-        FrontierExplorer.scan(self.scan, 1.0)
-        self.assertEqual(self.scan.phase, 'blocked')
-        self.scan.command.assert_called_with()
+    def test_rocking_across_scan_origin_at_101_degrees(self):
+        # Only the radial maximum is logged. These synthetic XY positions
+        # reproduce both a 0.15 m maximum and a >0.20 m segment displacement.
+        for angle in range(1, 362):
+            if angle <= 91:
+                x = -0.12 * angle / 91
+            else:
+                x = -0.12 + 0.27 * min(1, (angle - 91) / 10)
+            yaw = math.radians(angle)
+            self.scan.pose = (x, 0., math.atan2(math.sin(yaw), math.cos(yaw)))
+            FrontierExplorer.scan(self.scan, angle / 8.)
+            if angle == 101:
+                self.assertAlmostEqual(self.scan.max_drift, .15)
+            if self.scan.phase == 'settle':
+                break
+            self.assertEqual(self.scan.phase, 'scan')
+        self.assertEqual(self.scan.phase, 'settle')
 
     def test_actual_turn_enters_settling_phase(self):
         for i in range(1, 65):

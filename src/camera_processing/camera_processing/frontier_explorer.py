@@ -1,6 +1,8 @@
 """Closed-loop autonomous exploration for the two-room RGB-D simulation."""
 
+import hashlib
 import math
+from pathlib import Path as FilePath
 
 import numpy as np
 import rclpy
@@ -26,6 +28,9 @@ def wrap(angle):
 class FrontierExplorer(Node):
     def __init__(self):
         super().__init__('frontier_explorer')
+        source = FilePath(__file__).resolve()
+        fingerprint = hashlib.sha256(source.read_bytes()).hexdigest()[:12]
+        self.get_logger().info(f'Explorer source SHA256 {fingerprint} ({source})')
         self.velocity = self.create_publisher(Twist, '/model/mobile_robot/cmd_vel', 1)
         self.route = self.create_publisher(Path, '/exploration/path', 1)
         self.state_pub = self.create_publisher(String, '/exploration/status', 1)
@@ -60,7 +65,8 @@ class FrontierExplorer(Node):
         grid = np.asarray(msg.data, dtype=np.int8).reshape(info.height, info.width)
         self.resolution = info.resolution
         self.origin = info.origin.position
-        self.walk = traversable(grid, self.resolution)
+        start = self.cell() if self.pose is not None else None
+        self.walk = traversable(grid, self.resolution, start)
         self.grid = grid
         self.frontier = frontiers(grid)
         self.stamps['global'] = seconds(msg.header)
@@ -171,8 +177,6 @@ class FrontierExplorer(Node):
             self.scan_start_xy = self.pose[:2]
             self.max_drift = 0.0
             self.next_scan_log = now + 3.0
-            self.segment_xy = self.scan_start_xy
-            self.segment_sweep = self.sweep
         if self.last_heading is None:
             self.progress_time = now
             self.progress_sweep = self.sweep
@@ -180,22 +184,12 @@ class FrontierExplorer(Node):
             self.sweep += wrap(yaw - self.last_heading)
         self.last_heading = yaw
         self.max_drift = max(self.max_drift, math.dist(self.pose[:2], self.scan_start_xy))
-        # Skid steering shifts the rotation centre. Measure unwanted
-        # translation over a short angular segment, keeping the full sweep
-        # and its measured world poses for mapping.
-        if math.dist(self.pose[:2], self.segment_xy) > 0.20:
+        # The mapper already uses the moving chassis pose. Check clearance at
+        # its current position throughout the turn, including the rear side.
+        if self.mapped_turn_obstacle():
             self.command()
             self.phase = 'blocked'
-            self.report('Blocked: chassis moved over 0.20 m within a 30 deg scan segment.')
-            self.log_scan(now)
-            return
-        if self.sweep - self.segment_sweep >= math.radians(30):
-            self.segment_xy = self.pose[:2]
-            self.segment_sweep = self.sweep
-        if self.max_drift > 0.20 and self.mapped_turn_obstacle():
-            self.command()
-            self.phase = 'blocked'
-            self.report('Blocked: scan drift brought chassis within clearance of a mapped obstacle.')
+            self.report('Blocked: insufficient mapped clearance for rotation.')
             self.log_scan(now)
             return
         if self.sweep >= 2 * math.pi:
@@ -284,7 +278,9 @@ class FrontierExplorer(Node):
         start = self.cell()
         goal = self.path[-1]
         x, y, yaw = self.pose
-        if math.dist((x, y), self.xy(goal)) < 0.12:
+        # Settle near the planned observation cell before rotating. A large
+        # arrival tolerance can leave the chassis on a doorway's clearance rim.
+        if math.dist((x, y), self.xy(goal)) < 0.06:
             self.command()
             self.begin_scan()
             return
