@@ -61,6 +61,7 @@ class FrontierExplorer(Node):
         self.resolution = info.resolution
         self.origin = info.origin.position
         self.walk = traversable(grid, self.resolution)
+        self.grid = grid
         self.frontier = frontiers(grid)
         self.stamps['global'] = seconds(msg.header)
 
@@ -170,6 +171,8 @@ class FrontierExplorer(Node):
             self.scan_start_xy = self.pose[:2]
             self.max_drift = 0.0
             self.next_scan_log = now + 3.0
+            self.segment_xy = self.scan_start_xy
+            self.segment_sweep = self.sweep
         if self.last_heading is None:
             self.progress_time = now
             self.progress_sweep = self.sweep
@@ -177,10 +180,22 @@ class FrontierExplorer(Node):
             self.sweep += wrap(yaw - self.last_heading)
         self.last_heading = yaw
         self.max_drift = max(self.max_drift, math.dist(self.pose[:2], self.scan_start_xy))
-        if self.max_drift > 0.20:
+        # Skid steering shifts the rotation centre. Measure unwanted
+        # translation over a short angular segment, keeping the full sweep
+        # and its measured world poses for mapping.
+        if math.dist(self.pose[:2], self.segment_xy) > 0.20:
             self.command()
             self.phase = 'blocked'
-            self.report('Blocked: chassis translated during in-place scan.')
+            self.report('Blocked: chassis moved over 0.20 m within a 30 deg scan segment.')
+            self.log_scan(now)
+            return
+        if self.sweep - self.segment_sweep >= math.radians(30):
+            self.segment_xy = self.pose[:2]
+            self.segment_sweep = self.sweep
+        if self.max_drift > 0.20 and self.mapped_turn_obstacle():
+            self.command()
+            self.phase = 'blocked'
+            self.report('Blocked: scan drift brought chassis within clearance of a mapped obstacle.')
             self.log_scan(now)
             return
         if self.sweep >= 2 * math.pi:
@@ -188,6 +203,7 @@ class FrontierExplorer(Node):
             self.phase = 'settle'
             self.stopped_at = now
             self.log_scan(now)
+            self.report('Full turn complete. Waiting for updated map to plan.')
             return
         if self.sweep > self.progress_sweep + 0.10:
             self.progress_sweep = self.sweep
@@ -203,6 +219,20 @@ class FrontierExplorer(Node):
             self.next_scan_log = now + 3.0
         self.report('Scanning surroundings.')
         self.command(angular=0.38)
+
+    def mapped_turn_obstacle(self):
+        # The depth camera only sees ahead. Check mapped obstacles behind and
+        # beside the drifting chassis as well.
+        row, col = self.cell()
+        if not inside(self.grid, (row, col)):
+            return True
+        radius = math.ceil(0.42 / self.resolution) + 1
+        top, left = max(0, row - radius), max(0, col - radius)
+        window = self.grid[top:row + radius + 1, left:col + radius + 1]
+        rows, cols = np.where(window >= 50)
+        dx = self.origin.x + (left + cols + 0.5) * self.resolution - self.pose[0]
+        dy = self.origin.y + (top + rows + 0.5) * self.resolution - self.pose[1]
+        return bool(np.any(dx*dx + dy*dy < 0.42**2))
 
     def log_scan(self, now):
         wheel = 'unavailable'
@@ -228,6 +258,7 @@ class FrontierExplorer(Node):
             self.phase = 'drive'
             self.progress_time = now
             self.progress_index = self.index = 0
+            self.best_heading_error = math.inf
             self.report('Following A* path to frontier at (%.2f, %.2f) m.' % self.xy(path[-1]))
         elif not self.confirming:
             connected = reachable_cells(self.walk, start)
@@ -280,17 +311,26 @@ class FrontierExplorer(Node):
                 continue
             if clear_segment(self.walk, start, self.path[i]):
                 target = i
-        if target is None or now - self.progress_time > 7.0:
+        if target is None:
             self.retry_goal()
             return
         self.index = target
         if self.index > self.progress_index:
             self.progress_index = self.index
             self.progress_time = now
+            self.best_heading_error = math.inf
         tx, ty = self.xy(self.path[target])
         error = wrap(math.atan2(ty - y, tx - x) - yaw)
+        if self.index == self.progress_index and abs(error) < self.best_heading_error - 0.10:
+            self.best_heading_error = abs(error)
+            self.progress_time = now
+        if now - self.progress_time > 7.0:
+            self.retry_goal()
+            return
         angular = max(-0.55, min(0.55, 1.8 * error))
-        if abs(error) > 0.28:
+        # Align before advancing. A slow skid-steer turn can otherwise round
+        # a doorway corner into the inflated wall even on a valid A* path.
+        if abs(error) > 0.12:
             self.command(angular=angular)
         elif self.forward_blocked:
             self.retry_goal()
