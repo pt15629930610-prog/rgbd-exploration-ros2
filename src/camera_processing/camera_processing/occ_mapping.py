@@ -1,5 +1,6 @@
 
 import rclpy
+from message_filters import Subscriber, TimeSynchronizer
 from rclpy.node import Node
 
 from sensor_msgs.msg import PointCloud2
@@ -233,23 +234,10 @@ class OCCMapping(Node):
         # 订阅地面点云
         # -----------------------------------------
 
-        self.ground_sub = self.create_subscription(
-            PointCloud2,
-            '/rgbd_camera/ground',
-            self.ground_callback,
-            10
-        )
-
-        # -----------------------------------------
-        # 订阅障碍物点云
-        # -----------------------------------------
-
-        self.obstacle_sub = self.create_subscription(
-            PointCloud2,
-            '/rgbd_camera/obstacles',
-            self.obstacle_callback,
-            10
-        )
+        self.ground_sub = Subscriber(self, PointCloud2, '/rgbd_camera/ground')
+        self.obstacle_sub = Subscriber(self, PointCloud2, '/rgbd_camera/obstacles')
+        self.cloud_pair = TimeSynchronizer([self.ground_sub, self.obstacle_sub], 5)
+        self.cloud_pair.registerCallback(self.cloud_callback)
 
         # -----------------------------------------
         # 发布 OCC 地图
@@ -278,23 +266,12 @@ class OCCMapping(Node):
         )
 
     # =================================================
-    # 7. 地面点云回调
+    # 同一深度帧的地面和障碍物共同构成一次观测
     # =================================================
-
-    def ground_callback(self, msg):
-
-        self.latest_ground = convert_pointcloud(msg)
-
-        self.map_dirty = True
-
-    # =================================================
-    # 8. 障碍物点云回调
-    # =================================================
-
-    def obstacle_callback(self, msg):
-
-        self.latest_obstacles = convert_pointcloud(msg)
-
+    def cloud_callback(self, ground, obstacles):
+        self.latest_ground = convert_pointcloud(ground)
+        self.latest_obstacles = convert_pointcloud(obstacles)
+        self.observation_stamp = ground.header.stamp
         self.map_dirty = True
 
     # =================================================
@@ -369,12 +346,10 @@ class OCCMapping(Node):
 
         msg = OccupancyGrid()
 
-        now = self.get_clock().now().to_msg()
-
-        msg.header.stamp = now
+        msg.header.stamp = self.observation_stamp
         msg.header.frame_id = FRAME_ID
 
-        msg.info.map_load_time = now
+        msg.info.map_load_time = self.observation_stamp
 
         msg.info.resolution = RESOLUTION
 

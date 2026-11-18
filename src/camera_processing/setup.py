@@ -24,6 +24,7 @@ setup(
             os.path.join('share', package_name, 'launch'),
             glob('launch/*.launch.py')
         ),
+        (os.path.join('share', package_name, 'worlds'), glob('worlds/*.sdf')),
     ],
 
     install_requires=['setuptools'],
@@ -46,6 +47,7 @@ setup(
             'obstacle_clustering = camera_processing.obstacle_clustering:main',
 
             'open3d_viewer = camera_processing.open3d_viewer:main',
+            'map_accumulator = camera_processing.map_accumulator:main',
             'occ_mapping = camera_processing.occ_mapping:main',
         ],
     },

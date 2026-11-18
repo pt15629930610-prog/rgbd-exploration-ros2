@@ -85,7 +85,7 @@ def generate_launch_description():
         executable='rgbd_subscriber',
 
         parameters=[
-            {'use_sim_time': True}
+            {'use_sim_time': True, 'show_images': True, 'cloud_every_n_frames': 30}
         ],
 
         output='screen'

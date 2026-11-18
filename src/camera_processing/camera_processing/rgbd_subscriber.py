@@ -1,9 +1,7 @@
-from sklearn.cluster import DBSCAN
 import rclpy
 from rclpy.node import Node
 
 from sensor_msgs.msg import Image, CameraInfo, PointCloud2
-from std_msgs.msg import Header
 from sensor_msgs_py import point_cloud2
 from cv_bridge import CvBridge, CvBridgeError
 
@@ -22,7 +20,9 @@ class RGBDSubscriber(Node):
 
         # ROS 图像转换工具
         self.bridge = CvBridge()
-        self.debug_count = 0
+        self.show_images = self.declare_parameter('show_images', False).value
+        # Positive only for level-floor simulations with a known camera height.
+        self.camera_height = self.declare_parameter('camera_height_m', 0.0).value
 
         # 相机内参
         self.fx = None
@@ -35,18 +35,22 @@ class RGBDSubscriber(Node):
 
         # 深度图计数器
         self.depth_count = 0
+        self.cloud_every_n_frames = max(
+            1, self.declare_parameter('cloud_every_n_frames', 1).value
+        )
 
         # =====================================
         # 2. 创建 Subscriber
         # =====================================
 
         # RGB 图像订阅
-        self.rgb_sub = self.create_subscription(
-            Image,
-            '/rgbd_camera/image',
-            self.rgb_callback,
-            10
-        )
+        if self.show_images:
+            self.rgb_sub = self.create_subscription(
+                Image,
+                '/rgbd_camera/image',
+                self.rgb_callback,
+                10
+            )
 
         # Depth 深度图订阅
         self.depth_sub = self.create_subscription(
@@ -168,6 +172,13 @@ class RGBDSubscriber(Node):
     def depth_callback(self, msg):
 
         try:
+            if not self.camera_info_ready:
+                return
+            self.depth_count += 1
+            publish_cloud = (self.depth_count - 1) % self.cloud_every_n_frames == 0
+            if not (publish_cloud or self.show_images):
+                return
+
             # 5.1 ROS Depth Image 转换为 NumPy 数组
             depth = self.bridge.imgmsg_to_cv2(
                 msg,
@@ -179,76 +190,12 @@ class RGBDSubscriber(Node):
                 dtype=np.float32
             )
 
-            # 5.2 获取深度图尺寸
+            if publish_cloud:
+                self.publish_pointcloud(depth, msg)
+            if not self.show_images:
+                return
+
             height, width = depth.shape
-            # 每30帧进行一次深度采样测试
-            self.debug_count += 1
-
-            if self.debug_count % 30 == 0:
-
-                samples = {
-                    'Box': (160, 150),
-                    'Ground': (30, 220),
-                    'Background': (160, 30)
-                }
-
-                for name, (u, v) in samples.items():
-
-                    Z = float(depth[v, u])
-
-                    if np.isfinite(Z) and Z > 0:
-
-                        X = (u - self.cx) * Z / self.fx
-                        Y = (v - self.cy) * Z / self.fy
-
-                        self.get_logger().info(
-                            f'{name}: '
-                            f'Pixel=({u},{v}), '
-                            f'XYZ=({X:.3f}, {Y:.3f}, {Z:.3f}) m'
-                        )
-
-                    else:
-
-                        self.get_logger().info(
-                            f'{name}: Invalid Depth'
-                        )
-                        if self.camera_info_ready:
-                            self.publish_pointcloud(depth, msg)
-
-            # 5.3 等待相机内参
-            if self.camera_info_ready:
-
-                # 选择相机主点附近的像素
-                u = int(round(self.cx))
-                v = int(round(self.cy))
-
-                # 检查像素是否在图像范围内
-                if 0 <= u < width and 0 <= v < height:
-
-                    # 5.4 读取指定像素的深度值
-                    Z = float(depth[v, u])
-
-                    self.depth_count += 1
-
-                    # 5.5 判断深度值是否有效
-                    if np.isfinite(Z) and Z > 0:
-
-                        # 5.6 根据针孔相机模型计算三维坐标
-                        X = (u - self.cx) * Z / self.fx
-                        Y = (v - self.cy) * Z / self.fy
-
-                        # 每15帧打印一次
-                        if self.depth_count % 15 == 0:
-
-                            self.get_logger().info(
-                                f'Pixel = ({u}, {v}) | '
-                                f'Depth = {Z:.3f} m | '
-                                f'XYZ = ({X:.3f}, '
-                                f'{Y:.3f}, '
-                                f'{Z:.3f}) m'
-                            )
-
-            # =====================================
             # 6. Depth 图像可视化
             # =====================================
 
@@ -357,51 +304,30 @@ class RGBDSubscriber(Node):
             z[valid]
         )).astype(np.float32)
 
-        # 6. 创建 ROS Header
-       # 1. 创建 Header
-        header = Header()
+        header = msg.header
+        if self.pointcloud_pub.get_subscription_count():
+            self.pointcloud_pub.publish(point_cloud2.create_cloud_xyz32(header, points))
 
-        header.stamp = msg.header.stamp
-        header.frame_id = msg.header.frame_id
-
-
-        # 2. 发布原始点云
-        raw_cloud = point_cloud2.create_cloud_xyz32(
-            header,
-            points.tolist()
-        )
-
-        self.pointcloud_pub.publish(raw_cloud)
-
-
-        # 3. Voxel Grid 降采样
-        downsampled_points = self.voxel_downsample(
-            points
-        )
-
-        down_cloud = point_cloud2.create_cloud_xyz32(
-            header,
-            downsampled_points.tolist()
-        )
-
-        self.downsampled_pub.publish(down_cloud)
-
-
-        # 4. RANSAC 地面分割
-        ground_points, obstacle_points = (
-            self.ransac_ground_segmentation(
-                downsampled_points
+        downsampled_points = self.voxel_downsample(points)
+        if self.downsampled_pub.get_subscription_count():
+            self.downsampled_pub.publish(
+                point_cloud2.create_cloud_xyz32(header, downsampled_points)
             )
-        )
 
-        if ground_points is None:
-            return
-
+        if self.camera_height > 0.0:
+            # Optical +Y points down. Walls can fill the entire image at the start.
+            ground_mask = np.abs(downsampled_points[:, 1] - self.camera_height) < 0.05
+            ground_points = downsampled_points[ground_mask]
+            obstacle_points = downsampled_points[~ground_mask]
+        else:
+            ground_points, obstacle_points = self.ransac_ground_segmentation(downsampled_points)
+            if ground_points is None:
+                return
 
         # 5. 发布地面点云
         ground_cloud = point_cloud2.create_cloud_xyz32(
             header,
-            ground_points.tolist()
+            ground_points
         )
 
         self.ground_pub.publish(ground_cloud)
@@ -410,7 +336,7 @@ class RGBDSubscriber(Node):
         # 6. 发布障碍物点云
         obstacle_cloud = point_cloud2.create_cloud_xyz32(
             header,
-            obstacle_points.tolist()
+            obstacle_points
         )
 
         self.obstacle_pub.publish(obstacle_cloud)
