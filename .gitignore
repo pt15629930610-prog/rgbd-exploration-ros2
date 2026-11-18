@@ -1,0 +1,32 @@
+
+# ROS 2 colcon 编译文件
+/build/
+/install/
+/log/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Python 虚拟环境
+.venv/
+venv/
+
+# ROS Bag 数据
+rosbag2_*/
+*.db3
+*.mcap
+
+# 生成的地图文件
+global_occ_map.png
+local_occ_map.png
+
+# 临时文件
+*.tmp
+.DS_Store
+
+# 敏感配置
+.env
+.env.*

@@ -1,0 +1,558 @@
+
+<?xml version="1.0"?>
+<sdf version="1.8">
+  <world name="rgbd_lab">
+
+    <!-- ================================= -->
+    <!-- 1. 物理仿真配置 -->
+    <!-- ================================= -->
+
+    <physics name="default_physics" type="ignored">
+      <max_step_size>0.005</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>200</real_time_update_rate>
+    </physics>
+
+    <gravity>0 0 -9.8</gravity>
+
+    <!-- ================================= -->
+    <!-- 2. Gazebo 核心系统插件 -->
+    <!-- ================================= -->
+
+    <!-- 物理引擎 -->
+    <plugin filename="ignition-gazebo-physics-system"
+            name="ignition::gazebo::systems::Physics"/>
+
+    <!-- 实体创建、删除、移动 -->
+    <plugin filename="ignition-gazebo-user-commands-system"
+            name="ignition::gazebo::systems::UserCommands"/>
+
+    <!-- 场景同步 -->
+    <plugin filename="ignition-gazebo-scene-broadcaster-system"
+            name="ignition::gazebo::systems::SceneBroadcaster"/>
+
+    <!-- RGB-D 等传感器 -->
+    <plugin filename="ignition-gazebo-sensors-system"
+            name="ignition::gazebo::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <!-- ================================= -->
+    <!-- 3. 场景环境 -->
+    <!-- ================================= -->
+
+    <scene>
+      <ambient>0.6 0.6 0.6 1</ambient>
+      <background>0.7 0.7 0.7 1</background>
+      <shadows>true</shadows>
+    </scene>
+
+    <!-- 环境光源 -->
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- ================================= -->
+    <!-- 4. 地面 -->
+    <!-- ================================= -->
+
+    <model name="ground">
+      <static>true</static>
+
+      <link name="link">
+
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>20 20</size>
+            </plane>
+          </geometry>
+        </collision>
+
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>20 20</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.7 0.7 0.7 1</ambient>
+            <diffuse>0.7 0.7 0.7 1</diffuse>
+          </material>
+        </visual>
+
+      </link>
+    </model>
+
+    <!-- ================================= -->
+    <!-- 5. 测试障碍物 -->
+    <!-- ================================= -->
+
+    <model name="obstacle">
+      <static>true</static>
+      <pose>2 0 0.5 0 0 0</pose>
+
+      <link name="link">
+
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>1 1 1</size>
+            </box>
+          </geometry>
+        </collision>
+
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>1 1 1</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>1 0 0 1</ambient>
+            <diffuse>1 0 0 1</diffuse>
+          </material>
+        </visual>
+
+      </link>
+    </model>
+
+        <!-- ================================= -->
+        <!-- 6. RGB-D 相机 -->
+        <!-- ================================= -->
+
+
+    <!-- ================================= -->
+    <!-- 移动机器人 + RGB-D 相机 -->
+    <!-- ================================= -->
+
+    
+    <model name="mobile_robot">
+
+      <!-- 动态模型，不再固定在 Gazebo 世界中 -->
+      <static>false</static>
+      <self_collide>false</self_collide>
+
+      <pose>0 0 0 0 0 0</pose>
+
+      <!-- ================================= -->
+      <!-- 1. 底盘主体 -->
+      <!-- ================================= -->
+
+      <link name="base_link">
+
+        <inertial>
+          <pose>0 0 0.25 0 0 0</pose>
+          <mass>15.0</mass>
+          <inertia>
+            <ixx>0.2525</ixx>
+            <iyy>0.5125</iyy>
+            <izz>0.7010</izz>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyz>0</iyz>
+          </inertia>
+        </inertial>
+
+        <collision name="chassis_collision">
+          <pose>0 0 0.25 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.62 0.42 0.16</size>
+            </box>
+          </geometry>
+        </collision>
+
+        <visual name="chassis_visual">
+          <pose>0 0 0.25 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.62 0.42 0.16</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.1 0.2 0.8 1</ambient>
+            <diffuse>0.1 0.2 0.8 1</diffuse>
+          </material>
+        </visual>
+
+        <!-- 相机安装支架 -->
+
+        <visual name="camera_mount">
+          <pose>0 0 0.65 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.14 0.12 0.10</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.2 0.2 0.2 1</ambient>
+            <diffuse>0.2 0.2 0.2 1</diffuse>
+          </material>
+        </visual>
+
+        <!-- RGB-D 相机，保持原来的安装位置 -->
+
+        <sensor name="rgbd_sensor" type="rgbd_camera">
+
+          <pose>0 0 0.78 0 0 0</pose>
+
+          <always_on>true</always_on>
+          <update_rate>60</update_rate>
+
+          <topic>rgbd_camera</topic>
+
+          <visualize>false</visualize>
+
+          <camera>
+            <horizontal_fov>1.047</horizontal_fov>
+
+            <image>
+              <width>320</width>
+              <height>240</height>
+            </image>
+
+            <clip>
+              <near>0.1</near>
+              <far>5.0</far>
+            </clip>
+          </camera>
+
+        </sensor>
+
+      </link>
+
+
+      <!-- ================================= -->
+      <!-- 2. 左前驱动轮 -->
+      <!-- ================================= -->
+
+      <link name="left_front_wheel">
+
+        <pose>0.22 0.24 0.12 0 0 0</pose>
+
+        <inertial>
+          <mass>0.5</mass>
+          <inertia>
+            <ixx>0.002004</ixx>
+            <iyy>0.003600</iyy>
+            <izz>0.002004</izz>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyz>0</iyz>
+          </inertia>
+        </inertial>
+
+        <collision name="collision">
+          <pose>0 0 0 1.5708 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.12</radius>
+              <length>0.07</length>
+            </cylinder>
+          </geometry>
+        </collision>
+
+        <visual name="visual">
+          <pose>0 0 0 1.5708 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.12</radius>
+              <length>0.07</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.1 0.1 0.1 1</ambient>
+            <diffuse>0.1 0.1 0.1 1</diffuse>
+          </material>
+        </visual>
+
+      </link>
+
+
+      <!-- ================================= -->
+      <!-- 3. 右前驱动轮 -->
+      <!-- ================================= -->
+
+      <link name="right_front_wheel">
+
+        <pose>0.22 -0.24 0.12 0 0 0</pose>
+
+        <inertial>
+          <mass>0.5</mass>
+          <inertia>
+            <ixx>0.002004</ixx>
+            <iyy>0.003600</iyy>
+            <izz>0.002004</izz>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyz>0</iyz>
+          </inertia>
+        </inertial>
+
+        <collision name="collision">
+          <pose>0 0 0 1.5708 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.12</radius>
+              <length>0.07</length>
+            </cylinder>
+          </geometry>
+        </collision>
+
+        <visual name="visual">
+          <pose>0 0 0 1.5708 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.12</radius>
+              <length>0.07</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.1 0.1 0.1 1</ambient>
+            <diffuse>0.1 0.1 0.1 1</diffuse>
+          </material>
+        </visual>
+
+      </link>
+
+
+      <!-- ================================= -->
+      <!-- 4. 左后被动轮 -->
+      <!-- ================================= -->
+
+      <link name="left_rear_wheel">
+
+        <pose>-0.22 0.24 0.12 0 0 0</pose>
+
+        <inertial>
+          <mass>0.5</mass>
+          <inertia>
+            <ixx>0.002004</ixx>
+            <iyy>0.003600</iyy>
+            <izz>0.002004</izz>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyz>0</iyz>
+          </inertia>
+        </inertial>
+
+        <collision name="collision">
+          <pose>0 0 0 1.5708 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.12</radius>
+              <length>0.07</length>
+            </cylinder>
+          </geometry>
+        </collision>
+
+        <visual name="visual">
+          <pose>0 0 0 1.5708 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.12</radius>
+              <length>0.07</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.1 0.1 0.1 1</ambient>
+            <diffuse>0.1 0.1 0.1 1</diffuse>
+          </material>
+        </visual>
+
+      </link>
+
+
+      <!-- ================================= -->
+      <!-- 5. 右后被动轮 -->
+      <!-- ================================= -->
+
+      <link name="right_rear_wheel">
+
+        <pose>-0.22 -0.24 0.12 0 0 0</pose>
+
+        <inertial>
+          <mass>0.5</mass>
+          <inertia>
+            <ixx>0.002004</ixx>
+            <iyy>0.003600</iyy>
+            <izz>0.002004</izz>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyz>0</iyz>
+          </inertia>
+        </inertial>
+
+        <collision name="collision">
+          <pose>0 0 0 1.5708 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.12</radius>
+              <length>0.07</length>
+            </cylinder>
+          </geometry>
+        </collision>
+
+        <visual name="visual">
+          <pose>0 0 0 1.5708 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.12</radius>
+              <length>0.07</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.1 0.1 0.1 1</ambient>
+            <diffuse>0.1 0.1 0.1 1</diffuse>
+          </material>
+        </visual>
+
+      </link>
+
+
+      <!-- ================================= -->
+      <!-- 6. 四个车轮关节 -->
+      <!-- ================================= -->
+
+      <!-- 左前驱动轮关节 -->
+
+      <joint name="left_front_wheel_joint" type="revolute">
+
+        <parent>base_link</parent>
+        <child>left_front_wheel</child>
+
+        <axis>
+          <xyz>0 1 0</xyz>
+          <limit>
+            <lower>-1000000000</lower>
+            <upper>1000000000</upper>
+            <effort>100</effort>
+            <velocity>100</velocity>
+          </limit>
+          <dynamics>
+            <damping>0.01</damping>
+          </dynamics>
+        </axis>
+
+      </joint>
+
+
+      <!-- 右前驱动轮关节 -->
+
+      <joint name="right_front_wheel_joint" type="revolute">
+
+        <parent>base_link</parent>
+        <child>right_front_wheel</child>
+
+        <axis>
+          <xyz>0 1 0</xyz>
+          <limit>
+            <lower>-1000000000</lower>
+            <upper>1000000000</upper>
+            <effort>100</effort>
+            <velocity>100</velocity>
+          </limit>
+          <dynamics>
+            <damping>0.01</damping>
+          </dynamics>
+        </axis>
+
+      </joint>
+
+
+      <!-- 左后被动轮关节 -->
+
+      <joint name="left_rear_wheel_joint" type="revolute">
+
+        <parent>base_link</parent>
+        <child>left_rear_wheel</child>
+
+        <axis>
+          <xyz>0 1 0</xyz>
+          <limit>
+            <lower>-1000000000</lower>
+            <upper>1000000000</upper>
+            <effort>100</effort>
+            <velocity>100</velocity>
+          </limit>
+          <dynamics>
+            <damping>0.01</damping>
+          </dynamics>
+        </axis>
+
+      </joint>
+
+
+      <!-- 右后被动轮关节 -->
+
+      <joint name="right_rear_wheel_joint" type="revolute">
+
+        <parent>base_link</parent>
+        <child>right_rear_wheel</child>
+
+        <axis>
+          <xyz>0 1 0</xyz>
+          <limit>
+            <lower>-1000000000</lower>
+            <upper>1000000000</upper>
+            <effort>100</effort>
+            <velocity>100</velocity>
+          </limit>
+          <dynamics>
+            <damping>0.01</damping>
+          </dynamics>
+        </axis>
+
+      </joint>
+
+
+      <!-- ================================= -->
+      <!-- 7. Gazebo 差速驱动插件 -->
+      <!-- ================================= -->
+
+      <plugin
+        filename="ignition-gazebo-diff-drive-system"
+        name="ignition::gazebo::systems::DiffDrive">
+
+        <left_joint>left_front_wheel_joint</left_joint>
+        <right_joint>right_front_wheel_joint</right_joint>
+
+        <!-- 左右驱动轮中心距 -->
+        <wheel_separation>0.48</wheel_separation>
+
+        <!-- 车轮半径 -->
+        <wheel_radius>0.12</wheel_radius>
+
+        <!-- ROS 2 速度指令对应的 Gazebo 话题 -->
+        <topic>/model/mobile_robot/cmd_vel</topic>
+
+        <!-- 里程计话题 -->
+        <odom_topic>/model/mobile_robot/odometry</odom_topic>
+
+        <frame_id>odom</frame_id>
+        <child_frame_id>base_link</child_frame_id>
+
+        <odom_publish_frequency>30</odom_publish_frequency>
+
+        <!-- 速度限制 -->
+        <max_linear_velocity>0.5</max_linear_velocity>
+        <min_linear_velocity>-0.5</min_linear_velocity>
+
+        <max_angular_velocity>1.0</max_angular_velocity>
+        <min_angular_velocity>-1.0</min_angular_velocity>
+
+      </plugin>
+
+    </model>
+
+
+
+  </world>
+</sdf>
