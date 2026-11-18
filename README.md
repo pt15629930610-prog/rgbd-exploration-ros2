@@ -55,6 +55,29 @@ ros2 launch camera_processing two_room_mapping.launch.py
 手动给 `/model/mobile_robot/cmd_vel` 发送速度指令。先观察正前方隔墙，再慢速左转看门口，
 转回时检查同一段墙在全局图里是否重合。用 Ctrl+C 结束 launch。
 
+### 自主探索双房间
+
+在 Ubuntu 上编译并加载工作区后，先用 Ctrl+C 结束上一轮仿真，再启动自主模式。
+同一轮仿真只启动一个 launch，自主运行期间由探索节点独占速度指令。
+
+```bash
+ros2 launch camera_processing two_room_mapping.launch.py explore:=true
+```
+
+小车等待全局地图、局部 OCC 和里程计，随后原地转一圈。按默认角速度，
+首轮扫描约需 17 秒仿真时间。算法从观测到的自由格中寻找与未知区相邻的
+连通边界组，在已知自由空间内用 A* 选路；障碍物的规划膨胀半径为 0.55 m，
+对角移动需要两侧均可通行。规划只使用在线地图。
+
+在 **Global OCC Map** 中，蓝色箭头表示小车，绿色折线表示最近一次规划的路径，
+橙色圆点表示当前目标。小车以最高 0.16 m/s 跟踪路径，到达观察位置后再扫描。
+路径失效时重新规划，局部图检测到前方受阻或跟踪停滞时尝试其他目标。
+地图或里程计超过 1.2 秒仿真时间未更新时，控制器发零速度并等待恢复。
+
+终端显示 `Complete` 表示补扫后仍未找到符合条件的可达边界；
+`Blocked` 表示净空不足、原地扫描卡住或剩余目标重试失败。两种状态都会停车。
+Ctrl+C 结束整轮实验。省略 `explore:=true` 可进入手动建图模式。
+
 ## 5. Main Topics
 
 - /rgbd_camera/depth_image
@@ -62,5 +85,6 @@ ros2 launch camera_processing two_room_mapping.launch.py
 - /rgbd_camera/obstacles
 - /rgbd_camera/occ_grid
 - /exploration/map
+- /exploration/path
 - /model/mobile_robot/cmd_vel
 - /model/mobile_robot/odometry

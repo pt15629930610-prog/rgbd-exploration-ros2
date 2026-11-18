@@ -48,6 +48,7 @@ setup(
 
             'open3d_viewer = camera_processing.open3d_viewer:main',
             'map_accumulator = camera_processing.map_accumulator:main',
+            'frontier_explorer = camera_processing.frontier_explorer:main',
             'occ_mapping = camera_processing.occ_mapping:main',
         ],
     },

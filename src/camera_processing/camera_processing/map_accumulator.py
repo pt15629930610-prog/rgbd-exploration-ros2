@@ -10,7 +10,7 @@ import numpy as np
 import rclpy
 
 from rclpy.node import Node
-from nav_msgs.msg import OccupancyGrid, Odometry
+from nav_msgs.msg import OccupancyGrid, Odometry, Path
 
 
 # =====================================================
@@ -89,6 +89,8 @@ class MapAccumulator(Node):
         self.latest_odom = None
 
         self.map_count = 0
+        self.route_pixels = []
+        self.create_subscription(Path, '/exploration/path', self.path_callback, 1)
 
         self.warned_frame = False
 
@@ -156,6 +158,14 @@ class MapAccumulator(Node):
     # =================================================
     # 4. 里程计回调
     # =================================================
+
+    def path_callback(self, msg):
+        if msg.header.frame_id == 'odom':
+            self.route_pixels = [
+                (int((p.pose.position.x - MAP_X_MIN) / MAP_RESOLUTION),
+                 MAP_HEIGHT - 1 - int((p.pose.position.y - MAP_Y_MIN) / MAP_RESOLUTION))
+                for p in msg.poses
+            ]
 
     def odom_callback(self, msg):
 
@@ -522,6 +532,11 @@ class MapAccumulator(Node):
         # ---------------------------------------------
         # 9.2 绘制小车位置和朝向
         # ---------------------------------------------
+
+        if self.route_pixels:
+            cv2.polylines(image, [np.asarray(self.route_pixels, dtype=np.int32)],
+                          False, (0, 170, 0), 1)
+            cv2.circle(image, self.route_pixels[-1], 3, (0, 130, 255), -1)
 
         if self.latest_odom is not None:
 

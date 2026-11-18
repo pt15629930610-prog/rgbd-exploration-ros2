@@ -2,7 +2,9 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess
+from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
@@ -41,4 +43,15 @@ def generate_launch_description():
         )
         for executable in ('occ_mapping', 'map_accumulator', 'open3d_viewer')
     ]
-    return LaunchDescription([simulator, bridge, perception, *map_nodes])
+    explorer = Node(
+        package='camera_processing',
+        executable='frontier_explorer',
+        parameters=[{'use_sim_time': True}],
+        condition=IfCondition(LaunchConfiguration('explore')),
+        output='screen',
+    )
+    return LaunchDescription([
+        DeclareLaunchArgument('explore', default_value='false',
+                              description='Enable autonomous frontier exploration'),
+        simulator, bridge, perception, *map_nodes, explorer,
+    ])
