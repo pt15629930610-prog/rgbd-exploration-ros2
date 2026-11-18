@@ -4,6 +4,7 @@
 
 import os
 from collections import deque
+from textwrap import wrap
 
 import cv2
 import numpy as np
@@ -11,6 +12,7 @@ import rclpy
 
 from rclpy.node import Node
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
+from std_msgs.msg import String
 
 
 # =====================================================
@@ -91,6 +93,8 @@ class MapAccumulator(Node):
         self.map_count = 0
         self.route_pixels = []
         self.create_subscription(Path, '/exploration/path', self.path_callback, 1)
+        self.status_lines = []
+        self.create_subscription(String, '/exploration/status', self.status_callback, 1)
 
         self.warned_frame = False
 
@@ -158,6 +162,9 @@ class MapAccumulator(Node):
     # =================================================
     # 4. 里程计回调
     # =================================================
+
+    def status_callback(self, msg):
+        self.status_lines = wrap(msg.data, width=32)
 
     def path_callback(self, msg):
         if msg.header.frame_id == 'odom':
@@ -611,8 +618,9 @@ class MapAccumulator(Node):
         )
 
         # 标题区域
+        header_height = 65 + 16 * len(self.status_lines)
         header = np.zeros(
-            (65, MAP_WIDTH, 3),
+            (header_height, MAP_WIDTH, 3),
             dtype=np.uint8
         )
 
@@ -642,6 +650,10 @@ class MapAccumulator(Node):
             1
         )
 
+        for i, line in enumerate(self.status_lines):
+            cv2.putText(header, line, (8, 65 + 16 * i), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.38, (0, 210, 255), 1)
+
         canvas = np.vstack((
             header,
             image
@@ -653,7 +665,7 @@ class MapAccumulator(Node):
             canvas,
             (
                 MAP_WIDTH * scale,
-                (MAP_HEIGHT + 65) * scale
+                (MAP_HEIGHT + header_height) * scale
             ),
             interpolation=cv2.INTER_NEAREST
         )

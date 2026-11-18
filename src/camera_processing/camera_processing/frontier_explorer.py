@@ -8,9 +8,10 @@ from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from rclpy.node import Node
 from rclpy.signals import SignalHandlerOptions
+from std_msgs.msg import String
 
 from .frontier_planner import (
-    choose_path, clear_segment, frontiers, inside, traversable,
+    choose_path, clear_segment, frontiers, inside, reachable_cells, traversable,
 )
 
 
@@ -27,9 +28,16 @@ class FrontierExplorer(Node):
         super().__init__('frontier_explorer')
         self.velocity = self.create_publisher(Twist, '/model/mobile_robot/cmd_vel', 1)
         self.route = self.create_publisher(Path, '/exploration/path', 1)
+        self.state_pub = self.create_publisher(String, '/exploration/status', 1)
         self.create_subscription(OccupancyGrid, '/exploration/map', self.global_map, 1)
         self.create_subscription(OccupancyGrid, '/rgbd_camera/occ_grid', self.local_map, 1)
-        self.create_subscription(Odometry, '/model/mobile_robot/odometry', self.odometry, 1)
+        wheel_topic = '/model/mobile_robot/odometry'
+        pose_topic = self.declare_parameter('pose_topic', wheel_topic).value
+        self.create_subscription(Odometry, pose_topic, self.odometry, 1)
+        self.wheel_sample = None
+        if pose_topic != wheel_topic:
+            self.create_subscription(Odometry, wheel_topic, self.wheel_feedback, 1)
+        self.get_logger().info(f'Exploration pose feedback: {pose_topic}')
         self.stamps = dict.fromkeys(('global', 'local', 'odom'), -math.inf)
         self.walk = self.frontier = None
         self.pose = None
@@ -40,6 +48,7 @@ class FrontierExplorer(Node):
         self.phase = 'scan'
         self.last_heading = None
         self.sweep = 0.0
+        self.scan_start_xy = None
         self.confirming = False
         self.status = ''
         self.timer = self.create_timer(0.1, self.tick)
@@ -75,6 +84,10 @@ class FrontierExplorer(Node):
         yaw = math.atan2(2*(q.w*q.z + q.x*q.y), 1 - 2*(q.y*q.y + q.z*q.z))
         self.pose = (p.position.x, p.position.y, yaw)
         self.stamps['odom'] = seconds(msg.header)
+        self.yaw_rate = msg.twist.twist.angular.z
+
+    def wheel_feedback(self, msg):
+        self.wheel_sample = seconds(msg.header), msg.twist.twist.angular.z
 
     def cell(self):
         return (math.floor((self.pose[1] - self.origin.y) / self.resolution),
@@ -100,6 +113,7 @@ class FrontierExplorer(Node):
     def report(self, status):
         if self.status != status:
             self.get_logger().info(status)
+            self.state_pub.publish(String(data=status))
             self.status = status
 
     def command(self, linear=0.0, angular=0.0):
@@ -114,6 +128,7 @@ class FrontierExplorer(Node):
         self.confirming = confirming
         self.sweep = 0.0
         self.last_heading = None
+        self.scan_start_xy = None
 
     def tick(self):
         now = self.get_clock().now().nanoseconds * 1e-9
@@ -121,13 +136,14 @@ class FrontierExplorer(Node):
             self.command()
             return
         # Clock and sensor messages arrive on separate bridge topics.
-        if not all(-0.10 <= now - t <= 1.2 for t in self.stamps.values()):
+        stale = [name for name, t in self.stamps.items() if not -0.10 <= now - t <= 1.2]
+        if stale:
             self.command()
             if self.phase == 'drive':
                 self.phase = 'plan'
                 self.set_path([])
             self.last_heading = None
-            self.report('Waiting for fresh global map, local OCC and odometry.')
+            self.report('Waiting for fresh data: ' + ', '.join(stale))
             return
 
         if self.turn_blocked:
@@ -150,16 +166,28 @@ class FrontierExplorer(Node):
 
     def scan(self, now):
         yaw = self.pose[2]
+        if self.scan_start_xy is None:
+            self.scan_start_xy = self.pose[:2]
+            self.max_drift = 0.0
+            self.next_scan_log = now + 3.0
         if self.last_heading is None:
             self.progress_time = now
             self.progress_sweep = self.sweep
         else:
             self.sweep += wrap(yaw - self.last_heading)
         self.last_heading = yaw
+        self.max_drift = max(self.max_drift, math.dist(self.pose[:2], self.scan_start_xy))
+        if self.max_drift > 0.20:
+            self.command()
+            self.phase = 'blocked'
+            self.report('Blocked: chassis translated during in-place scan.')
+            self.log_scan(now)
+            return
         if self.sweep >= 2 * math.pi:
             self.command()
             self.phase = 'settle'
             self.stopped_at = now
+            self.log_scan(now)
             return
         if self.sweep > self.progress_sweep + 0.10:
             self.progress_sweep = self.sweep
@@ -168,9 +196,22 @@ class FrontierExplorer(Node):
             self.command()
             self.phase = 'blocked'
             self.report('Blocked: scan commanded but no angular progress.')
+            self.log_scan(now)
             return
+        if now >= self.next_scan_log:
+            self.log_scan(now)
+            self.next_scan_log = now + 3.0
         self.report('Scanning surroundings.')
         self.command(angular=0.38)
+
+    def log_scan(self, now):
+        wheel = 'unavailable'
+        if self.wheel_sample and abs(now - self.wheel_sample[0]) <= 1.2:
+            wheel = f'{self.wheel_sample[1]:+.2f}'
+        self.get_logger().info(
+            f'Scan: yaw change {math.degrees(self.sweep):+.0f} deg, '
+            f'max XY drift {self.max_drift:.2f} m, yaw rate (rad/s): '
+            f'pose {self.yaw_rate:+.2f}, wheels {wheel}')
 
     def plan(self, now):
         self.command()
@@ -189,6 +230,11 @@ class FrontierExplorer(Node):
             self.progress_index = self.index = 0
             self.report('Following A* path to frontier at (%.2f, %.2f) m.' % self.xy(path[-1]))
         elif not self.confirming:
+            connected = reachable_cells(self.walk, start)
+            self.get_logger().info(
+                f'No goal: reachable free area {connected.sum() * self.resolution**2:.2f} m2, '
+                f'reachable frontier cells {np.count_nonzero(connected & self.frontier)}. '
+                'Starting confirmation scan.')
             self.begin_scan(confirming=True)
         elif self.failed and choose_path(self.walk, self.frontier, start, self.resolution,
                                          self.scanned, []):

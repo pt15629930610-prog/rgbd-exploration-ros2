@@ -46,7 +46,7 @@ ros2 launch camera_processing two_room_mapping.launch.py
 启动后可以在 Gazebo 中观察小车的实际位置，并与三个感知窗口对照。
 
 - **Gazebo** 显示双房间、门口、箱体和小车的运动。
-- **Global OCC Map**：基于里程计累积的二维地图（`/exploration/map`）。
+- **Global OCC Map**：使用 Gazebo 车身位姿累积的二维地图（`/exploration/map`）。
 - **RGB-D Local Occupancy Grid**：车头朝上的当前局部地图（`/rgbd_camera/occ_grid`）。
 - **RGB-D 3D Obstacle Perception**：当前相机视野内的地面（灰色）和障碍物（红色）点云。
 
@@ -64,8 +64,7 @@ ros2 launch camera_processing two_room_mapping.launch.py
 ros2 launch camera_processing two_room_mapping.launch.py explore:=true
 ```
 
-小车等待全局地图、局部 OCC 和里程计，随后原地转一圈。按默认角速度，
-首轮扫描约需 17 秒仿真时间。算法从观测到的自由格中寻找与未知区相邻的
+小车等待全局地图、局部 OCC 和车身位姿，随后原地转一圈。算法从观测到的自由格中寻找与未知区相邻的
 连通边界组，在已知自由空间内用 A* 选路；障碍物的规划膨胀半径为 0.55 m，
 对角移动需要两侧均可通行。规划只使用在线地图。
 
@@ -78,6 +77,18 @@ ros2 launch camera_processing two_room_mapping.launch.py explore:=true
 `Blocked` 表示净空不足、原地扫描卡住或剩余目标重试失败。两种状态都会停车。
 Ctrl+C 结束整轮实验。省略 `explore:=true` 可进入手动建图模式。
 
+### 核对原地旋转与扫描结果
+
+双房间的四个轮子按左右两侧差速驱动，车头的黄色条标记底盘 +X。
+建图和控制使用 Gazebo 提供的车身世界位姿作为仿真定位输入，两间房内的墙和障碍仍由深度相机观测。
+原有轮速里程计独立发布，便于区分轮子运动和车身运动。
+
+在新的仿真中启动探索，观察黄条是否随车身转动。终端的 `Scan:` 行每三秒给出累计转角、
+最大平面位移、车身角速度（`pose`）和轮速推算的角速度（`wheels`）。
+若车轮有转速而车身没有转动，扫描会报告无角度进展；若原地扫描期间车身偏离起点
+超过 0.20 m，控制器会停车并报告平移异常。全局图标题下会显示等待、跟踪或停车原因。
+若日志显示 `No goal`，同一行给出当前连通的自由面积和与其相邻的候选边界格数，可与门口附近的地图对照。
+
 ## 5. Main Topics
 
 - /rgbd_camera/depth_image
@@ -86,5 +97,7 @@ Ctrl+C 结束整轮实验。省略 `explore:=true` 可进入手动建图模式�
 - /rgbd_camera/occ_grid
 - /exploration/map
 - /exploration/path
+- /exploration/status
 - /model/mobile_robot/cmd_vel
-- /model/mobile_robot/odometry
+- /model/mobile_robot/odometry（车轮里程计）
+- /model/mobile_robot/world_odometry（Gazebo 车身位姿，仅双房间仿真）

@@ -11,6 +11,7 @@ from launch_ros.actions import Node
 def generate_launch_description():
     share = Path(get_package_share_directory('camera_processing'))
     world = share / 'worlds' / 'two_rooms.sdf'
+    pose_feedback = '/model/mobile_robot/world_odometry'
     simulator = ExecuteProcess(
         cmd=['ign', 'gazebo', '-r', str(world)],
         additional_env={'LIBGL_DRI3_DISABLE': '1'},
@@ -24,6 +25,7 @@ def generate_launch_description():
             '/rgbd_camera/depth_image@sensor_msgs/msg/Image[ignition.msgs.Image',
             '/rgbd_camera/camera_info@sensor_msgs/msg/CameraInfo[ignition.msgs.CameraInfo',
             '/model/mobile_robot/odometry@nav_msgs/msg/Odometry[ignition.msgs.Odometry',
+            pose_feedback + '@nav_msgs/msg/Odometry[ignition.msgs.Odometry',
             '/model/mobile_robot/cmd_vel@geometry_msgs/msg/Twist]ignition.msgs.Twist',
         ],
         output='screen',
@@ -39,6 +41,8 @@ def generate_launch_description():
             package='camera_processing',
             executable=executable,
             parameters=[{'use_sim_time': True}],
+            remappings=[('/model/mobile_robot/odometry', pose_feedback)]
+            if executable == 'map_accumulator' else [],
             output='screen',
         )
         for executable in ('occ_mapping', 'map_accumulator', 'open3d_viewer')
@@ -46,7 +50,7 @@ def generate_launch_description():
     explorer = Node(
         package='camera_processing',
         executable='frontier_explorer',
-        parameters=[{'use_sim_time': True}],
+        parameters=[{'use_sim_time': True, 'pose_topic': pose_feedback}],
         condition=IfCondition(LaunchConfiguration('explore')),
         output='screen',
     )

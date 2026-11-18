@@ -260,6 +260,16 @@
           </material>
         </visual>
 
+        <!-- +X nose marker, visible from above while turning. -->
+        <visual name="front_marker">
+          <pose>0.24 0 0.337 0 0 0</pose>
+          <geometry><box><size>0.09 0.36 0.012</size></box></geometry>
+          <material>
+            <ambient>1 0.65 0 1</ambient>
+            <diffuse>1 0.65 0 1</diffuse>
+          </material>
+        </visual>
+
         <!-- 相机安装支架 -->
 
         <visual name="camera_mount">
@@ -402,7 +412,7 @@
 
 
       <!-- ================================= -->
-      <!-- 4. 左后被动轮 -->
+      <!-- 4. 左后驱动轮 -->
       <!-- ================================= -->
 
       <link name="left_rear_wheel">
@@ -449,7 +459,7 @@
 
 
       <!-- ================================= -->
-      <!-- 5. 右后被动轮 -->
+      <!-- 5. 右后驱动轮 -->
       <!-- ================================= -->
 
       <link name="right_rear_wheel">
@@ -545,7 +555,7 @@
       </joint>
 
 
-      <!-- 左后被动轮关节 -->
+      <!-- 左后驱动轮关节 -->
 
       <joint name="left_rear_wheel_joint" type="revolute">
 
@@ -568,7 +578,7 @@
       </joint>
 
 
-      <!-- 右后被动轮关节 -->
+      <!-- 右后驱动轮关节 -->
 
       <joint name="right_rear_wheel_joint" type="revolute">
 
@@ -600,7 +610,9 @@
         name="ignition::gazebo::systems::DiffDrive">
 
         <left_joint>left_front_wheel_joint</left_joint>
+        <left_joint>left_rear_wheel_joint</left_joint>
         <right_joint>right_front_wheel_joint</right_joint>
+        <right_joint>right_rear_wheel_joint</right_joint>
 
         <!-- 左右驱动轮中心距 -->
         <wheel_separation>0.48</wheel_separation>
@@ -626,6 +638,16 @@
         <max_angular_velocity>1.0</max_angular_velocity>
         <min_angular_velocity>-1.0</min_angular_velocity>
 
+      </plugin>
+
+      <!-- Simulation pose feedback, independent of wheel encoder slip. -->
+      <plugin filename="ignition-gazebo-odometry-publisher-system"
+              name="ignition::gazebo::systems::OdometryPublisher">
+        <odom_topic>/model/mobile_robot/world_odometry</odom_topic>
+        <odom_frame>odom</odom_frame>
+        <robot_base_frame>base_link</robot_base_frame>
+        <dimensions>2</dimensions>
+        <odom_publish_frequency>30</odom_publish_frequency>
       </plugin>
 
     </model>
