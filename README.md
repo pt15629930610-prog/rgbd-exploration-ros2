@@ -43,8 +43,9 @@ ros2 launch camera_processing two_room_mapping.launch.py
 
 场景随包安装。两间房共 8 m × 6 m，小车从西间原点朝 +X 出发。
 正前方约 1.43 m 是隔墙，左前方是净宽 1.4 m 的门，东间有一个箱体。
-Gazebo 在后台运行，桌面只显示以下三个窗口：
+启动后可以在 Gazebo 中观察小车的实际位置，并与三个感知窗口对照。
 
+- **Gazebo** 显示双房间、门口、箱体和小车的运动。
 - **Global OCC Map**：基于里程计累积的二维地图（`/exploration/map`）。
 - **RGB-D Local Occupancy Grid**：车头朝上的当前局部地图（`/rgbd_camera/occ_grid`）。
 - **RGB-D 3D Obstacle Perception**：当前相机视野内的地面（灰色）和障碍物（红色）点云。

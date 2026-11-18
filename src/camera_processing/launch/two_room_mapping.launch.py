@@ -10,7 +10,7 @@ def generate_launch_description():
     share = Path(get_package_share_directory('camera_processing'))
     world = share / 'worlds' / 'two_rooms.sdf'
     simulator = ExecuteProcess(
-        cmd=['ign', 'gazebo', '-s', '-r', str(world)],
+        cmd=['ign', 'gazebo', '-r', str(world)],
         additional_env={'LIBGL_DRI3_DISABLE': '1'},
         output='screen',
     )
