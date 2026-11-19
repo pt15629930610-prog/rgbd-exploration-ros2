@@ -48,6 +48,7 @@ class FrontierExplorer(Node):
         self.walk = self.frontier = None
         self.pose = None
         self.path = []
+        self.speed_limit = .16
         self.scanned = []
         self.failed = []
         self.retried = False
@@ -287,6 +288,9 @@ class FrontierExplorer(Node):
         self.progress_index = self.index = 0
         self.best_heading_error = math.inf
 
+    def route_arrived(self):
+        self.begin_scan()
+
     def drive(self, now, check_frontier=True):
         start = self.cell()
         if not inside(self.walk, start) or not self.walk[start]:
@@ -300,7 +304,7 @@ class FrontierExplorer(Node):
         # arrival tolerance can leave the chassis on a doorway's clearance rim.
         if math.dist((x, y), self.xy(goal)) < 0.06:
             self.command()
-            self.begin_scan()
+            self.route_arrived()
             return
         # Recheck the remaining route as obstacles appear during motion.
         # A frontier typically recedes as the camera approaches. Retain the
@@ -329,7 +333,7 @@ class FrontierExplorer(Node):
             if clear_segment(self.walk, start, self.path[i]):
                 target = i
         if target is None:
-            self.retry_goal()
+            self.retry_goal('no clear lookahead on route')
             return
         self.index = target
         if self.index > self.progress_index:
@@ -342,7 +346,7 @@ class FrontierExplorer(Node):
             self.best_heading_error = abs(error)
             self.progress_time = now
         if now - self.progress_time > 7.0:
-            self.retry_goal()
+            self.retry_goal('no tracking progress for 7 s')
             return
         angular = max(-0.55, min(0.55, 1.8 * error))
         # Align before advancing. A slow skid-steer turn can otherwise round
@@ -350,16 +354,17 @@ class FrontierExplorer(Node):
         if abs(error) > 0.12:
             self.command(angular=angular)
         elif self.forward_blocked:
-            self.retry_goal()
+            self.retry_goal('obstacle in local forward corridor')
         else:
-            self.command(min(0.16, math.hypot(tx - x, ty - y)), angular)
+            taper = min(1., math.hypot(tx - x, ty - y) / .16)
+            self.command(self.speed_limit * taper, angular)
 
-    def retry_goal(self):
+    def retry_goal(self, reason):
         self.command()
         self.failed.append(self.path[-1])
         self.set_path([])
         self.phase = 'plan'
-        self.report('Route blocked or stalled; trying another frontier.')
+        self.report(f'Replanning: {reason}.')
 
 
 def main(args=None):

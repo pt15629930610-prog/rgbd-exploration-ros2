@@ -14,7 +14,7 @@ from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 
 from .door_snapshot import query_image
-from .door_task import door_box, locate_panel, parse_task, search_path
+from .door_task import door_box, locate_panel, parse_command, search_path
 from .frontier_explorer import FrontierExplorer, seconds, wrap
 from .frontier_planner import astar
 
@@ -72,24 +72,37 @@ class DoorNavigator(FrontierExplorer):
                 self.entrance = self.pose
 
     def new_task(self, msg):
+        cancel = msg.data.strip() in ('停止', '停车', '取消')
+        if not cancel:
+            try:
+                task, speed = parse_command(msg.data)
+            except ValueError as exc:
+                self.report(str(exc))
+                return
+            if task is None:
+                if self.phase == 'idle':
+                    self.report('No active door task. Include speed in the next door command.')
+                else:
+                    self.speed_limit = speed
+                    self.report(f'Speed limit updated: {speed:.2f} m/s.')
+                return
         self.command()
         self.set_path([])
         self.generation += 1
         self.phase = 'idle'
         self.task = self.landmark = None
-        if msg.data.strip() in ('停止', '停车', '取消'):
+        if cancel:
             self.report('Task cancelled.')
             return
-        try:
-            self.task = parse_task(msg.data)
-        except ValueError as exc:
-            self.report(str(exc))
-            return
+        self.task = task
+        self.speed_limit = .16 if speed is None else speed
         self.failed.clear()
         self.scanned.clear()
+        self.failed_parking_cell = None
         self.route_failures = 0
         self.phase = 'start'
-        self.report('Received: ' + msg.data)
+        self.report(f'Received: {msg.data} | angle {math.degrees(task[0]):+.0f} deg, '
+                    f'stop {task[1]:.2f} m, speed <= {self.speed_limit:.2f} m/s.')
 
     def begin_scan(self, confirming=False):
         self.set_path([])
@@ -220,12 +233,22 @@ class DoorNavigator(FrontierExplorer):
         lateral = abs(-normal[1]*delta[0] + normal[0]*delta[1])
         return abs(np.dot(delta, normal)-self.task[1]) <= .14 and lateral <= .22
 
-    def retry_goal(self):
+    def route_arrived(self):
+        self.route_failures = 0
+        self.failed_parking_cell = None
+        super().route_arrived()
+
+    def retry_goal(self, reason):
+        self.command()
+        self.failed.append(self.path[-1])
+        if self.parking_route:
+            self.failed_parking_cell = self.path[-1]
         self.route_failures += 1
         if self.route_failures >= 4:
-            self.halt('Stopped: repeated blocked approaches. Inspect the occupancy map.')
+            self.halt(f'Stopped after 4 consecutive failed approaches: {reason}.')
         else:
-            super().retry_goal()
+            self.report(f'Approach {self.route_failures}/4: {reason}; checking alternate views.')
+            self.begin_scan()
 
     def plan_task(self, now):
         self.command()
@@ -239,15 +262,19 @@ class DoorNavigator(FrontierExplorer):
                 [math.cos(self.direction), math.sin(self.direction)])
             hint = (math.floor((y-self.origin.y)/self.resolution),
                     math.floor((x-self.origin.x)/self.resolution))
-            path = astar(self.walk, start, hint) if hint not in self.failed else []
+            recent_failure = (self.failed_parking_cell is not None and
+                              math.dist(hint, self.failed_parking_cell)*self.resolution < .65)
+            path = [] if recent_failure else astar(self.walk, start, hint)
             if path:
+                self.parking_route = True
                 self.start_drive(path, now)
                 return
         path = search_path(self.walk, self.frontier, start, self.resolution, self.direction,
                            self.scanned+self.failed, hint)
         if path:
+            self.parking_route = False
             self.start_drive(path, now)
-            self.report('Driving to the next target-directed viewpoint.')
+            self.report('Driving to selected frontier at (%.2f, %.2f) m.' % self.xy(path[-1]))
         else:
             self.halt('Stopped: no reachable unvisited viewpoint for this task.')
 

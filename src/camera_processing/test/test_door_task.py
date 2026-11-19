@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
-from camera_processing.door_task import door_box, locate_panel, parse_task, search_path
+from camera_processing.door_task import door_box, locate_panel, parse_command, parse_task, search_path
 from camera_processing.frontier_planner import astar, traversable
 
 
@@ -32,6 +32,24 @@ class DoorTaskTests(unittest.TestCase):
             door_box('[2,5,2,90]')
         depth.fill(np.inf)
         self.assertIsNone(locate_panel(box, depth, 277., 160., current, math.pi/2))
+
+    def test_speed_clause_combined_and_standalone(self):
+        self.assertEqual(parse_command('以0.12米/秒去前面这个门，在门前1米停下'), ((0, 1), .12))
+        self.assertEqual(parse_command('去左边的门，以10cm/s行驶，在门前1米停下'),
+                         ((math.pi/2, 1), .1))
+        self.assertEqual(parse_command('速度改为0.08米/秒'), (None, .08))
+        for text in ('速度改为0米/秒', '速度改为0.35米/秒', '以-0.2m/s去对面的门'):
+            with self.assertRaises(ValueError):
+                parse_command(text)
+
+    def test_long_frontier_route_excludes_actual_failed_frontier(self):
+        walk = np.ones((100, 120), dtype=bool)
+        frontier = np.zeros_like(walk)
+        frontier[50, 100] = frontier[80, 90] = True
+        path = search_path(walk, frontier, (50, 10), .05, 0, [])
+        self.assertEqual(path[-1], (50, 100))
+        alternate = search_path(walk, frontier, (50, 10), .05, 0, [path[-1]])
+        self.assertEqual(alternate[-1], (80, 90))
 
     def test_direction_changes_frontier(self):
         walk = np.ones((61, 61), dtype=bool)

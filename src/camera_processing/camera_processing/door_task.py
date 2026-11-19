@@ -11,7 +11,7 @@ from .frontier_planner import astar, reachable_cells
 
 def parse_task(text):
     match = re.fullmatch(
-        r'(?:请)?(?:前往|抵达|去|到达|到)?(对面|前方|左边|左侧|右边|右侧)(?:的)?(?:门|出口)'
+        r'(?:请)?(?:前往|抵达|去|到达|到)?(对面|前方|前面|左边|左侧|右边|右侧)(?:的|这扇|那扇|这个)?(?:门|出口)'
         r'(?:[，,]?(?:在)?(?:它的?|他的?|其)?(?:门)?(?:正)?前(?:方)?(?:大约|大概|约)?'
         r'([0-9]+(?:\.[0-9]+)?)(米|厘米|m|cm)(?:处)?(?:停下|停车|停止)?)?[。！!]?',
         ''.join(text.split()))
@@ -25,6 +25,24 @@ def parse_task(text):
         raise ValueError('当前场景支持车体中心距门面 0.7 至 3.0 米')
     angle = math.pi/2 if side.startswith('左') else -math.pi/2 if side.startswith('右') else 0.
     return angle, distance
+
+
+def parse_command(text):
+    """Return (door task, speed cap); an isolated speed clause updates the active task."""
+    text = ''.join(text.split()).rstrip('。！!')
+    speed = None
+    clause = re.search(r'(?:以|速度(?:改为|设为|调到|为))([0-9]+(?:\.[0-9]+)?)'
+                       r'(厘米/秒|米/秒|米每秒|cm/s|m/s)(?:的速度)?(?:行驶|前进)?', text)
+    if clause:
+        speed = float(clause[1])
+        if clause[2] in ('厘米/秒', 'cm/s'):
+            speed /= 100
+        if not .05 <= speed <= .30:
+            raise ValueError('行驶速度范围：0.05 至 0.30 米/秒')
+        text = text[:clause.start()].rstrip('，,') + text[clause.end():].lstrip('，,')
+        if not text:
+            return None, speed
+    return parse_task(text), speed
 
 
 def door_box(answer):
@@ -85,9 +103,4 @@ def search_path(walk, frontier, start, resolution, direction, visited, hint=None
     if not indices.size:
         return []
     i = indices[np.argmax(score[indices])]
-    path = astar(walk, start, (int(rows[i]), int(cols[i])))
-    # Observe again after a short approach even on a long open aisle.
-    for i, cell in enumerate(path):
-        if math.dist(start, cell)*resolution >= 1.6:
-            return path[:i+1]
-    return path
+    return astar(walk, start, (int(rows[i]), int(cols[i])))

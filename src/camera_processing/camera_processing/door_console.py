@@ -3,7 +3,7 @@
 import rclpy
 from std_msgs.msg import String
 
-from .door_task import parse_task
+from .door_task import parse_command
 
 
 def main():
@@ -14,12 +14,12 @@ def main():
         print('正在等待四门导航节点…', flush=True)
         while rclpy.ok() and not pub.get_subscription_count():
             rclpy.spin_once(node, timeout_sec=.2)
-        print('例如：去对面的门，在门前1米停下。输入“停车”取消任务，Ctrl+C 退出。')
+        print('例如：以0.12米/秒去对面的门，在门前1米停下。途中可输入“速度改为0.08米/秒”或“停车”。')
         while rclpy.ok():
             text = input('指令 > ').strip()
             if text not in ('停止', '停车', '取消'):
                 try:
-                    parse_task(text)
+                    parse_command(text)
                 except ValueError as exc:
                     print(exc)
                     continue

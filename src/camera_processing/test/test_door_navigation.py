@@ -9,9 +9,45 @@ from unittest.mock import Mock
 import numpy as np
 
 from camera_processing.door_navigator import DoorNavigator
+from camera_processing.frontier_explorer import FrontierExplorer
 
 
 class DoorDecisions(unittest.TestCase):
+    def test_forward_command_obeys_speed_limit_and_obstacle_stop(self):
+        node = SimpleNamespace(walk=np.ones((3, 10), dtype=bool), cell=lambda: (1, 0),
+                               xy=lambda c: (c[1]*.05, c[0]*.05), pose=(0., .05, 0.),
+                               path=[(1, c) for c in range(8)], resolution=.05, index=0,
+                               progress_index=0, progress_time=0., speed_limit=.08,
+                               command=Mock(), forward_blocked=False, retry_goal=Mock())
+        FrontierExplorer.drive(node, 1., check_frontier=False)
+        node.command.assert_called_with(.08, 0.)
+        node.forward_blocked = True
+        FrontierExplorer.drive(node, 1.1, check_frontier=False)
+        node.retry_goal.assert_called_with('obstacle in local forward corridor')
+
+    def test_speed_change_preserves_task_and_pending_observation(self):
+        node = self.state()
+        DoorNavigator.new_task(node, SimpleNamespace(data='速度改为0.10米/秒'))
+        self.assertEqual(node.speed_limit, .1)
+        self.assertEqual((node.generation, node.phase), (2, 'vision'))
+        self.assertIsNotNone(node.landmark)
+        node.set_path.assert_not_called()
+
+    def test_only_consecutive_approach_failures_stop_task(self):
+        node = Mock(spec=DoorNavigator)
+        node.route_failures = 2
+        node.failed = []
+        node.parking_route = False
+        node.path = [(10, 12), (10, 13)]
+        DoorNavigator.retry_goal(node, 'no clear lookahead on route')
+        self.assertEqual(node.route_failures, 3)
+        DoorNavigator.route_arrived(node)
+        self.assertEqual(node.route_failures, 0)
+        for i in range(4):
+            DoorNavigator.retry_goal(node, 'obstacle in local forward corridor')
+        node.halt.assert_called_once()
+        self.assertIn('local forward corridor', node.halt.call_args.args[0])
+
     def state(self):
         node = SimpleNamespace(command=Mock(), set_path=Mock(), report=Mock(),
                                generation=2, request_id=2, pending=Future(),
