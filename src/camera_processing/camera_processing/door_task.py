@@ -65,7 +65,7 @@ def door_box(answer):
     return box
 
 
-def locate_panel(box, depth, fx, cx, pose, direction, *, details=None):
+def locate_panel(box, depth, fx, cx, pose, direction, *, details=None, panel_mask=None):
     """Check depth across the closed door against the requested wall normal."""
     h, w = depth.shape
     left, top, right, bottom = np.array(box) * (w, h, w, h) / 1000
@@ -73,12 +73,23 @@ def locate_panel(box, depth, fx, cx, pose, direction, *, details=None):
     v = np.linspace(top*.75+bottom*.25, top*.25+bottom*.75, 5).astype(int)
     z = depth[np.ix_(v, u)]
     valid = np.isfinite(z) & (z > .1) & (z < 4.99)
+    support = np.ones_like(valid) if panel_mask is None else panel_mask[np.ix_(v, u)]
+    if panel_mask is not None:
+        if details is not None:
+            details.append(f'棕色门板采样 {support.sum()}/{z.size}（与取深度的位置相同）')
+        if support.sum() < z.size * .5:
+            if details is not None:
+                details.append('候选框大部分没有目标门板外观，排除该候选')
+            return None
+        if details is not None:
+            details.append('RGB 已确认房门')
     if details is not None:
         details.append(f'有效深度 {valid.sum()}/{z.size}（范围 0.1～4.99 m）')
-    if valid.sum() < z.size * .7:
+    if valid.sum() < z.size * .7 or (valid & support).sum() < support.sum() * .7:
         if details is not None:
             details.append('有效深度不足 70%，无法定位')
         return None
+    valid &= support
     z_left = (cx-u) * z / fx
     yaw = pose[2]
     x = pose[0] + z * math.cos(yaw) - z_left * math.sin(yaw)

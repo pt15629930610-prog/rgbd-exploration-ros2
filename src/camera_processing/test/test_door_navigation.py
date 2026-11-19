@@ -16,7 +16,10 @@ import numpy as np
 from camera_processing import door_navigator
 from camera_processing.door_navigator import DoorNavigator, observe
 from camera_processing.door_run_log import DoorRunLog
+from camera_processing.door_task import locate_panel
 from camera_processing.frontier_explorer import FrontierExplorer
+from camera_processing.frontier_planner import frontiers, traversable
+from camera_processing.map_accumulator import mark_chassis_interior
 
 
 class DoorDecisions(unittest.TestCase):
@@ -81,7 +84,7 @@ class DoorDecisions(unittest.TestCase):
     @patch('camera_processing.door_navigator.query_image')
     def test_records_both_model_answers_and_invalid_depth(self, query):
         query.side_effect = ['[200,100,800,900]', '房门']
-        _, frame = cv2.imencode('.jpg', np.zeros((48, 64, 3), np.uint8))
+        _, frame = cv2.imencode('.jpg', np.full((48, 64, 3), (35, 57, 84), np.uint8))
         point, detail, crop = observe('', frame, np.full((48, 64), np.nan),
                                       55., 32., (0., 0., 0.), 0.)
         self.assertIsNone(point)
@@ -94,7 +97,7 @@ class DoorDecisions(unittest.TestCase):
     def test_off_center_box_uses_original_depth_coordinates(self, query):
         query.side_effect = ['json\n```json\n[{"bbox_2d":[600,150,900,940]}]\n```', '房门']
         rgb = np.zeros((96, 160, 3), np.uint8)
-        rgb[:, 96:144] = 255
+        rgb[:, 96:144] = (45, 82, 130)
         _, frame = cv2.imencode('.jpg', rgb)
         depth = np.full(rgb.shape[:2], np.nan)
         depth[:, 96:144] = 2.
@@ -103,7 +106,23 @@ class DoorDecisions(unittest.TestCase):
         cutout = cv2.imdecode(crop, cv2.IMREAD_GRAYSCALE)
         h, w = cutout.shape
         self.assertEqual(max(h, w), 224)
-        self.assertGreater(cutout[h//2, w//2], 240)
+        self.assertGreater(cutout[h//2, w//2], 80)
+
+    @patch('camera_processing.door_navigator.query_image')
+    def test_frame_12_flat_grey_screen_cannot_become_a_door(self, query):
+        query.side_effect = ['[750,342,1000,750]', '房门']
+        _, frame = cv2.imencode('.jpg', np.full((240, 320, 3), (104, 92, 75), np.uint8))
+        yaw = math.radians(29)
+        u = np.arange(320)
+        z = (.075 + 4.02) / (math.cos(yaw) - (160-u)/277.*math.sin(yaw))
+        depth = np.tile(z, (240, 1))
+        geometry = locate_panel([750, 342, 1000, 750], depth, 277., 160.,
+                                (-4.02, 0., yaw), 0.)
+        np.testing.assert_allclose(geometry, (.075, .43), atol=.035)
+        point, detail, _ = observe('', frame, depth, 277., 160.,
+                                   (-4.02, 0., yaw), 0.)
+        self.assertIsNone(point)
+        self.assertIn('棕色门板采样 0/45', detail)
 
     @patch('camera_processing.door_navigator.query_image')
     def test_rgb_rejection_skips_depth_and_malformed_answer_skips_only_that_frame(self, query):
@@ -175,6 +194,7 @@ class DoorDecisions(unittest.TestCase):
                                entrance=(-4., 0., 0.),
                                direction=math.pi/2, task=(math.pi/2, 1.),
                                verifying=True, moving_view=False, landmark=np.array([0., 5.]),
+                               candidate=None, recovery_used=False,
                                next_view=Mock(), phase='vision', log_view=Mock())
         node.near_parking_point = lambda point: DoorNavigator.near_parking_point(node, point)
         node.halt = lambda reason: DoorNavigator.halt(node, reason)
@@ -203,15 +223,70 @@ class DoorDecisions(unittest.TestCase):
         self.assertEqual(node.phase, 'idle')
         node.next_view.assert_called_once()
 
-    def test_new_door_on_search_route_switches_to_parking_plan(self):
+    def test_only_consistent_views_interrupt_search(self):
         node = self.state()
-        node.moving_view = True
+        node.moving_view, node.phase = True, 'drive'
         node.pose = (0., 4.3, math.pi/2)
         node.landmark = None
         node.verifying = False
         node.pending.set_result((np.array([0., 5.]), '看见', None))
         DoorNavigator.finish_view(node)
+        DoorNavigator.finish_view(node)
+        self.assertIsNone(node.landmark)
+        node.command.assert_not_called()
+        self.assertEqual(node.phase, 'drive')
+        node.camera_pose = (0., 4., math.pi/2 + .20)
+        DoorNavigator.finish_view(node)
         self.assertEqual(node.phase, 'plan')
         node.command.assert_called_once_with()
         node.set_path.assert_called_once_with([])
         node.next_view.assert_not_called()
+
+    def test_positive_observation_does_not_cut_short_recovery_scan(self):
+        node = self.state()
+        node.recovery_used, node.verifying = True, False
+        node.pending.set_result((np.array([.03, 5.02]), '房门', None))
+        DoorNavigator.finish_view(node)
+        node.next_view.assert_called_once()
+        node.set_path.assert_not_called()
+
+    def test_no_frontier_takes_side_views_and_waits_for_new_map(self):
+        node = Mock(spec=DoorNavigator)
+        node.command = Mock()
+        node.cell.return_value = (35, 16)
+        node.grid = np.zeros((70, 70), np.int8)
+        node.resolution, node.direction = .05, 0.
+        node.walk = traversable(node.grid, node.resolution)
+        node.frontier = frontiers(node.grid)
+        node.landmark, node.scanned, node.failed = None, [], []
+        node.recovery_used, node.plan_after, node.stamps = False, 1., {'global': 1.}
+        node.xy.return_value = (1., .8)
+        DoorNavigator.plan_task(node, 1.)
+        node.begin_scan.assert_called_once_with(confirming=True)
+        node.halt.assert_not_called()
+        node.plan_after = 2.
+        DoorNavigator.plan_task(node, 2.)
+        node.halt.assert_not_called()
+        node.grid[:, 49:] = -1
+        node.walk, node.frontier = traversable(node.grid, .05), frontiers(node.grid)
+        node.stamps['global'] = 2.1
+        DoorNavigator.plan_task(node, 2.2)
+        path = node.start_drive.call_args.args[0]
+        self.assertTrue(all(node.walk[cell] for cell in path))
+        self.assertTrue(node.frontier[path[-1]])
+        node.grid.fill(0)
+        node.frontier = frontiers(node.grid)
+        DoorNavigator.plan_task(node, 2.3)
+        node.halt.assert_called_once()
+
+    def test_start_on_cell_boundary_connects_to_observed_fan_only(self):
+        grid = np.full((240, 240), -1, np.int8)
+        grid[120:145, 40:100] = 0
+        grid[119, 42] = 100
+        mark_chassis_interior(grid, -4., 0.)
+        self.assertEqual(grid[119, 39], 0)
+        self.assertEqual(grid[119, 42], 100)
+        self.assertEqual(grid[119, 32], -1)
+        self.assertFalse(traversable(grid, .05)[119, 39])
+        grid[119, 42] = 0
+        self.assertTrue(traversable(grid, .05)[119, 39])

@@ -14,18 +14,16 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 
+from .door_log_sync import windows_log_server
 from .door_run_log import DoorRunLog, RUN_LOG_DIRECTORY
 from .door_snapshot import MODEL, query_image
 from .door_task import door_box, locate_panel, parse_command, search_path
 from .frontier_explorer import FrontierExplorer, seconds, wrap
-from .frontier_planner import astar
+from .frontier_planner import astar, inside, reachable_cells
 
 
-def candidate_crop(jpeg, box):
+def candidate_crop(frame, box):
     """Crop the proposed door with a little context, preserving the aspect ratio."""
-    frame = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
-    if frame is None:
-        raise ValueError('无法解码本帧 JPEG')
     height, width = frame.shape[:2]
     left, top, right, bottom = np.array(box) * (width, height, width, height) / 1000
     pad_x, pad_y = .20 * (right - left), .15 * (bottom - top)
@@ -55,7 +53,10 @@ def observe(server, image, depth, fx, cx, pose, direction):
         return None, details[0] + '；模型未返回有效门框，本帧结果不确定，未检查深度', None
     if box is None:
         return None, details[0] + '；RGB 整帧未找到候选门，未检查深度', None
-    crop = candidate_crop(image, box)
+    frame = cv2.imdecode(np.frombuffer(image, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        raise ValueError('无法解码本帧 JPEG')
+    crop = candidate_crop(frame, box)
     if crop is None:
         return None, details[0] + '；候选框小于一个像素，未检查深度', None
     label = query_image(server, crop, 'jpeg',
@@ -65,11 +66,11 @@ def observe(server, image, depth, fx, cx, pose, direction):
     if label.strip(' \t\r\n。.!！“”"「」') not in ('门', '房门'):
         details.append('RGB 局部未确认房门，未检查深度')
         return None, '；'.join(details), crop
-    details.append('RGB 已确认房门')
+    details.append('Qwen 局部判为房门')
     # The depth image and intrinsics are in the original full-frame coordinates.
-    point = locate_panel(box, depth, fx, cx, pose, direction, details=details)
-    if point is None:
-        details.append('门已看见，本帧未能定位')
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    panel = cv2.inRange(hsv, (3, 45, 25), (32, 255, 255)).astype(bool)
+    point = locate_panel(box, depth, fx, cx, pose, direction, details=details, panel_mask=panel)
     return point, '；'.join(details), crop
 
 
@@ -94,9 +95,12 @@ class DoorNavigator(FrontierExplorer):
         self.sync.registerCallback(self.images)
         self.run_log = None
         try:
-            self.run_log = DoorRunLog(RUN_LOG_DIRECTORY)
+            mirror_url = windows_log_server(self.server)
+            self.run_log = DoorRunLog(RUN_LOG_DIRECTORY, mirror_url)
             self.get_logger().info(f'本次导航日志：{self.run_log.path}')
             self.record(f'四门导航启动，模型 {MODEL}，服务 {self.server}')
+            if mirror_url:
+                self.get_logger().info(f'Windows 日志同步地址 {mirror_url}，文件 {self.run_log.path.name}')
         except OSError as exc:
             self.get_logger().warning(f'无法创建导航日志：{exc}')
         self.report('Waiting for /door/task')
@@ -156,6 +160,9 @@ class DoorNavigator(FrontierExplorer):
             self.report('Task cancelled.')
             return
         self.task = task
+        self.candidate = None
+        self.recovery_used = False
+        self.plan_after = -math.inf
         self.speed_limit = .16 if speed is None else speed
         self.failed.clear()
         self.scanned.clear()
@@ -173,7 +180,12 @@ class DoorNavigator(FrontierExplorer):
                           self.near_parking_point(self.landmark))
         offset = self.task[0]
         toward_center = -1 if offset > 0 else 1
-        offsets = (0,) if self.verifying else (0, toward_center*.85, -toward_center*.85)
+        if self.verifying:
+            offsets = (0,)
+        elif confirming:
+            offsets = (toward_center * 1.40, -toward_center * 1.40, 0.)
+        else:
+            offsets = (0, toward_center*.85, -toward_center*.85)
         self.headings = deque(self.direction + angle for angle in offsets)
         self.next_view()
 
@@ -186,7 +198,10 @@ class DoorNavigator(FrontierExplorer):
             if self.verifying:
                 self.halt('Door could not be confirmed at the parking point.')
                 return
-            self.scanned.append(self.cell())
+            cell = self.cell()
+            if cell not in self.scanned:
+                self.scanned.append(cell)
+            self.plan_after = self.last_frame_stamp
             self.phase = 'plan'
 
     def halt(self, reason):
@@ -325,12 +340,34 @@ class DoorNavigator(FrontierExplorer):
                 self.next_view()
             return
         previous = self.landmark
+        if previous is None:
+            if self.candidate is None or np.linalg.norm(point - self.candidate[0]) > .65:
+                self.candidate = (point, self.camera_pose)
+                self.log_view('首次候选，继续当前搜索，从另一视角复核门位')
+                if not self.moving_view:
+                    self.next_view()
+                return
+            first, pose = self.candidate
+            if (math.dist(pose[:2], self.camera_pose[:2]) < .15 and
+                    abs(wrap(pose[2] - self.camera_pose[2])) < math.radians(6)):
+                self.log_view('视角变化不足，保留候选并继续搜索')
+                if not self.moving_view:
+                    self.next_view()
+                return
+            point = (first + point) / 2
+            self.candidate = None
+            self.log_view('两个不同视角的门位一致')
         if previous is not None and np.linalg.norm(point-previous) > .65:
             self.log_view('与已记录门位相差超过 0.65 m，继续复查')
             if not self.moving_view:
                 self.next_view()
             return
         self.landmark = point
+        finishing_side_views = self.recovery_used and self.phase in ('turn', 'capture', 'vision')
+        if not self.verifying and (previous is not None or finishing_side_views):
+            if not self.moving_view:
+                self.next_view()
+            return
         if not self.moving_view and previous is not None and self.verifying and self.near_parking_point(point):
             self.log_view('门前复核通过，距离与横向误差均满足停车条件')
             self.halt(f'Arrived: {np.dot(point-self.pose[:2], normal):.2f} m from door.')
@@ -348,6 +385,7 @@ class DoorNavigator(FrontierExplorer):
 
     def route_arrived(self):
         self.route_failures = 0
+        self.recovery_used = False
         self.failed_parking_cell = None
         super().route_arrived()
 
@@ -365,6 +403,9 @@ class DoorNavigator(FrontierExplorer):
 
     def plan_task(self, now):
         self.command()
+        if self.stamps['global'] < self.plan_after:
+            self.report('Waiting for occupancy from the latest observation.')
+            return
         start = self.cell()
         hint = None
         if self.landmark is not None:
@@ -392,7 +433,18 @@ class DoorNavigator(FrontierExplorer):
             self.start_drive(path, now)
             self.report('Driving to selected frontier at (%.2f, %.2f) m.' % self.xy(path[-1]))
         else:
-            self.halt('Stopped: no reachable unvisited viewpoint for this task.')
+            connected = reachable_cells(self.walk, start)
+            raw = int(self.grid[start]) if inside(self.grid, start) else '地图外'
+            self.log_view(f'起点格 {start}，原始占用 {raw}，可达自由面积 '
+                          f'{connected.sum()*self.resolution**2:.2f} m²，可达边界格 '
+                          f'{np.count_nonzero(connected & self.frontier)}，'
+                          f'已观测点 {len(self.scanned)}，失败点 {len(self.failed)}')
+            if not self.recovery_used:
+                self.recovery_used = True
+                self.report('No safe route yet. Looking to both sides for a reachable frontier.')
+                self.begin_scan(confirming=True)
+            else:
+                self.halt('Stopped: no safe unvisited route after new side views and an updated map.')
 
 
 def main():

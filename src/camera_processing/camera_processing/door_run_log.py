@@ -6,24 +6,27 @@ from html import escape
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
+from .door_log_sync import HTML_HEADER, LogMirror
+
 
 RUN_LOG_DIRECTORY = Path.home() / 'door_nav_logs'
 
 
 class DoorRunLog:
-    def __init__(self, directory):
+    def __init__(self, directory, mirror_url=None):
         directory.mkdir(parents=True, exist_ok=True)
         prefix = datetime.now().strftime('door_%Y-%m-%d_%H-%M-%S_')
         self.file = NamedTemporaryFile(dir=directory, prefix=prefix, suffix='.html',
-                                       mode='w', encoding='utf-8', delete=False)
+                                       mode='w', encoding='utf-8', newline='\n', delete=False)
         self.path = Path(self.file.name)
-        self.file.write('<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
-                        '<title>四门导航日志</title><body><h1>四门导航日志</h1>\n')
+        self.file.write(HTML_HEADER)
         self.file.flush()
+        self.mirror = LogMirror(self.path, mirror_url) if mirror_url else None
 
     def event(self, message, jpeg=None):
         timestamp = datetime.now().astimezone().isoformat(timespec='milliseconds')
-        self.file.write(f'<p><time>{timestamp}</time> {escape(message)}</p>\n')
+        safe = escape(message).replace('\r', '&#13;').replace('\n', '&#10;')
+        self.file.write(f'<p><time>{timestamp}</time> {safe}</p>\n')
         if jpeg is not None:
             data = base64.b64encode(jpeg).decode('ascii')
             self.file.write(f'<img alt="本次发给 Qwen 的 RGB 图" src="data:image/jpeg;base64,{data}">\n')
@@ -31,3 +34,5 @@ class DoorRunLog:
 
     def close(self):
         self.file.close()
+        if self.mirror is not None:
+            self.mirror.close()

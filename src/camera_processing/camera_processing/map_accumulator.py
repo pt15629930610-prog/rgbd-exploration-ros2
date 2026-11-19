@@ -47,6 +47,22 @@ LOCAL_FRAME = "camera_aligned"
 MAX_ODOM_DT = 0.25
 
 
+def mark_chassis_interior(grid, x, y):
+    """Seed only unknown cells under the measured chassis, inside its 0.42 m width."""
+    radius = .16
+    row = int(np.floor((y - MAP_Y_MIN) / MAP_RESOLUTION))
+    col = int(np.floor((x - MAP_X_MIN) / MAP_RESOLUTION))
+    if not (0 <= row < grid.shape[0] and 0 <= col < grid.shape[1]):
+        return
+    cells = int(np.ceil(radius / MAP_RESOLUTION))
+    rows = np.arange(max(0, row-cells), min(grid.shape[0], row+cells+1))
+    cols = np.arange(max(0, col-cells), min(grid.shape[1], col+cells+1))
+    dy = MAP_Y_MIN + (rows + .5) * MAP_RESOLUTION - y
+    dx = MAP_X_MIN + (cols + .5) * MAP_RESOLUTION - x
+    patch = grid[rows[0]:rows[-1]+1, cols[0]:cols[-1]+1]
+    patch[(patch < 0) & (dy[:, None]**2 + dx**2 <= radius**2)] = 0
+
+
 # =====================================================
 # 2. 四元数转换为航向角
 # =====================================================
@@ -442,6 +458,7 @@ class MapAccumulator(Node):
         oy = gy[occupied_mask]
 
         self.global_grid[oy, ox] = 100
+        mark_chassis_interior(self.global_grid, robot_x, robot_y)
 
     # =================================================
     # 8. 发布全局 OccupancyGrid
