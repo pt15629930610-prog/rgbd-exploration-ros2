@@ -64,7 +64,7 @@ def door_box(answer):
     return box
 
 
-def locate_panel(box, depth, fx, cx, pose, direction):
+def locate_panel(box, depth, fx, cx, pose, direction, *, details=None):
     """Check depth across the closed door against the requested wall normal."""
     h, w = depth.shape
     left, top, right, bottom = np.array(box) * (w, h, w, h) / 1000
@@ -72,7 +72,11 @@ def locate_panel(box, depth, fx, cx, pose, direction):
     v = np.linspace(top*.75+bottom*.25, top*.25+bottom*.75, 5).astype(int)
     z = depth[np.ix_(v, u)]
     valid = np.isfinite(z) & (z > .1) & (z < 4.99)
+    if details is not None:
+        details.append(f'有效深度 {valid.sum()}/{z.size}（范围 0.1～4.99 m）')
     if valid.sum() < z.size * .7:
+        if details is not None:
+            details.append('有效深度不足 70%，无法定位')
         return None
     z_left = (cx-u) * z / fx
     yaw = pose[2]
@@ -83,7 +87,11 @@ def locate_panel(box, depth, fx, cx, pose, direction):
     along = (-x*ny + y*nx)[valid]
     # A different wall, an oblique occluder or a frame spanning mixed depths
     # cannot reliably determine the requested door's parking point.
-    if np.ptp(np.percentile(normal, (10, 90))) > .14 or np.ptp(along) < .16:
+    spread = np.ptp(np.percentile(normal, (10, 90)))
+    width = np.ptp(along)
+    if details is not None:
+        details.append(f'法向跨度 {spread:.2f} m（要求 ≤0.14），横向跨度 {width:.2f} m（要求 ≥0.16）')
+    if spread > .14 or width < .16:
         return None
     return np.array([np.median(x[valid]), np.median(y[valid])])
 

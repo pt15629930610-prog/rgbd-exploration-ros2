@@ -23,18 +23,26 @@ def observe(server, rgb, depth, fx, cx, pose, direction):
     ok, image = cv2.imencode('.jpg', rgb)
     if not ok:
         raise ValueError('JPEG encoding failed')
-    visible = query_image(server, image, 'jpeg',
+    raw = query_image(server, image, 'jpeg',
                           '只根据这张画面，能辨认出房门本体吗？看见回答“看见”，'
-                          '没有或不确定回答“未见”。只输出一个选项。').strip(' \t\n。.!！“”')
+                          '没有或不确定回答“未见”。只输出一个选项。')
+    details = [f'Qwen 可见性原答={raw.strip()!r}']
+    visible = raw.strip(' \t\n。.!！“”')
     if visible == '未见':
-        return None
+        return None, '；'.join(details)
     if visible != '看见':
         raise ValueError('无法判读模型回答：' + visible)
     reply = query_image(server, image, 'jpeg',
                         '查找有门框或把手的房门。图中没有可辨认的门就只输出 []。'
                         '若可见，只输出门板的二维边界框 [xmin,ymin,xmax,ymax]，坐标归一化到0到1000。')
-    box = door_box(reply)
-    return None if box is None else locate_panel(box, depth, fx, cx, pose, direction)
+    details.append(f'门框原答={reply.strip()!r}')
+    try:
+        box = door_box(reply)
+    except ValueError as exc:
+        raise ValueError('；'.join(details) + '；门框解析失败') from exc
+    point = None if box is None else locate_panel(box, depth, fx, cx, pose, direction,
+                                                  details=details)
+    return point, '；'.join(details)
 
 
 class DoorNavigator(FrontierExplorer):
@@ -49,6 +57,7 @@ class DoorNavigator(FrontierExplorer):
         self.generation = 0
         self.poses = deque(maxlen=100)
         self.create_subscription(String, '/door/task', self.new_task, 5)
+        self.frame_pub = self.create_publisher(Image, '/door/observation_image', 1)
         self.create_subscription(CameraInfo, '/rgbd_camera/camera_info', self.info, qos_profile_sensor_data)
         subs = [message_filters.Subscriber(self, Image, '/rgbd_camera/' + topic,
                                            qos_profile=qos_profile_sensor_data)
@@ -100,12 +109,15 @@ class DoorNavigator(FrontierExplorer):
         self.scanned.clear()
         self.failed_parking_cell = None
         self.route_failures = 0
+        self.view_number = 0
+        self.last_view_pose = None
         self.phase = 'start'
         self.report(f'Received: {msg.data} | angle {math.degrees(task[0]):+.0f} deg, '
                     f'stop {task[1]:.2f} m, speed <= {self.speed_limit:.2f} m/s.')
 
     def begin_scan(self, confirming=False):
         self.set_path([])
+        self.en_route = False
         self.verifying = (self.landmark is not None and
                           self.near_parking_point(self.landmark))
         offset = self.task[0]
@@ -115,7 +127,12 @@ class DoorNavigator(FrontierExplorer):
         self.next_view()
 
     def next_view(self):
-        if self.headings:
+        if self.en_route:
+            self.en_route = False
+            self.phase = 'drive'
+            self.progress_time = self.get_clock().now().nanoseconds * 1e-9
+            self.log_view('本次行进复看未锁定目标，恢复跟踪并重新检查路径')
+        elif self.headings:
             self.heading = self.headings.popleft()
             self.phase = 'turn'
             self.turn_started = self.get_clock().now().nanoseconds * 1e-9
@@ -147,7 +164,15 @@ class DoorNavigator(FrontierExplorer):
             self.direction = self.entrance[2] + self.task[0]
             self.begin_scan()
         elif self.phase == 'drive':
-            self.drive(now, check_frontier=False)
+            if not self.parking_route and self.due_for_view():
+                self.command()
+                self.en_route = True
+                self.verifying = False
+                self.heading = self.pose[2]
+                self.capture_after = now + .25
+                self.phase = 'capture'
+            else:
+                self.drive(now, check_frontier=False)
         elif self.phase == 'plan':
             self.plan_task(now)
         elif self.phase == 'turn':
@@ -166,6 +191,16 @@ class DoorNavigator(FrontierExplorer):
             self.command()
             if self.pending.done():
                 self.finish_view()
+
+    def due_for_view(self):
+        if self.last_view_pose is None:
+            return True
+        distance = math.dist(self.pose[:2], self.last_view_pose[:2])
+        angle = abs(wrap(self.pose[2] - self.last_view_pose[2]))
+        return distance >= .9 or (distance >= .25 and angle >= math.radians(35))
+
+    def log_view(self, message):
+        self.get_logger().info(f'[门观测 {self.view_number}] {message}')
 
     def capture(self, now):
         self.command()
@@ -193,6 +228,12 @@ class DoorNavigator(FrontierExplorer):
             self.pending = self.vision_worker.submit(observe, self.server, image, metres,
                                                      *self.intrinsics, pose, self.direction)
             self.camera_pose = pose
+            self.last_view_pose = pose
+            self.view_number += 1
+            self.frame_pub.publish(rgb)
+            source = '行进复看' if self.en_route else '门前复核' if self.verifying else '定向观察'
+            self.log_view(f'{source}，RGB 时间戳 {stamp:.3f}，车位 ({pose[0]:.2f}, {pose[1]:.2f}) m，'
+                          f'拍摄航向 {math.degrees(pose[2]):.0f}°，任务方向 {math.degrees(self.direction):.0f}°')
         except Exception as exc:
             self.halt('Camera error: ' + str(exc))
             return
@@ -206,25 +247,39 @@ class DoorNavigator(FrontierExplorer):
         if (math.dist(self.pose[:2], self.camera_pose[:2]) > .10 or
                 abs(wrap(self.pose[2]-self.camera_pose[2])) > .09):
             self.phase = 'turn'
+            self.log_view('等待推理期间车身位姿变化，丢弃旧帧，重新取图')
             self.turn_started = self.get_clock().now().nanoseconds * 1e-9
             return
         try:
-            point = self.pending.result()
+            point, details = self.pending.result()
         except Exception as exc:
             self.halt('Vision request failed: ' + str(exc))
             return
         normal = np.array([math.cos(self.direction), math.sin(self.direction)])
-        if point is None or np.dot(point-self.entrance[:2], normal) < .6:
+        self.log_view(details)
+        if point is None:
+            self.log_view('没有通过视觉与深度检查的门位，继续观察')
+            self.next_view()
+            return
+        projection = np.dot(point-self.entrance[:2], normal)
+        self.log_view(f'候选门 ({point[0]:.2f}, {point[1]:.2f}) m，相对入口的方向投影 {projection:.2f} m')
+        if projection < .6:
+            self.log_view('方向投影小于 0.60 m，排除该候选门')
             self.next_view()
             return
         previous = self.landmark
         if previous is not None and np.linalg.norm(point-previous) > .65:
+            self.log_view('与已记录门位相差超过 0.65 m，继续复查')
             self.next_view()
             return
         self.landmark = point
+        self.en_route = False
         if previous is not None and self.verifying and self.near_parking_point(point):
+            self.log_view('门前复核通过，距离与横向误差均满足停车条件')
             self.halt(f'Arrived: {np.dot(point-self.pose[:2], normal):.2f} m from door.')
             return
+        self.log_view('接受门位，按指令距离计算停车点')
+        self.set_path([])
         self.phase = 'plan'
 
     def near_parking_point(self, point):
@@ -267,8 +322,11 @@ class DoorNavigator(FrontierExplorer):
             path = [] if recent_failure else astar(self.walk, start, hint)
             if path:
                 self.parking_route = True
+                self.report(f'Following parking route to ({x:.2f}, {y:.2f}) m.')
                 self.start_drive(path, now)
                 return
+            why = '该处最近接近失败' if recent_failure else '当前可通行地图中 A* 未找到路径'
+            self.log_view(f'已定位门，停车点 ({x:.2f}, {y:.2f}) m；{why}，改选靠近停车点的 frontier')
         path = search_path(self.walk, self.frontier, start, self.resolution, self.direction,
                            self.scanned+self.failed, hint)
         if path:
