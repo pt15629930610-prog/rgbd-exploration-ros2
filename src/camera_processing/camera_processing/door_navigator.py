@@ -133,14 +133,13 @@ class DoorNavigator(FrontierExplorer):
         self.failed_parking_cell = None
         self.route_failures = 0
         self.view_number = 0
-        self.last_view_pose = None
+        self.last_frame_stamp = -math.inf
         self.phase = 'start'
         self.report(f'Received: {msg.data} | angle {math.degrees(task[0]):+.0f} deg, '
                     f'stop {task[1]:.2f} m, speed <= {self.speed_limit:.2f} m/s.')
 
     def begin_scan(self, confirming=False):
         self.set_path([])
-        self.en_route = False
         self.verifying = (self.landmark is not None and
                           self.near_parking_point(self.landmark))
         offset = self.task[0]
@@ -150,12 +149,7 @@ class DoorNavigator(FrontierExplorer):
         self.next_view()
 
     def next_view(self):
-        if self.en_route:
-            self.en_route = False
-            self.phase = 'drive'
-            self.progress_time = self.get_clock().now().nanoseconds * 1e-9
-            self.log_view('本次行进复看未锁定目标，恢复跟踪并重新检查路径')
-        elif self.headings:
+        if self.headings:
             self.heading = self.headings.popleft()
             self.phase = 'turn'
             self.turn_started = self.get_clock().now().nanoseconds * 1e-9
@@ -183,18 +177,22 @@ class DoorNavigator(FrontierExplorer):
         if self.turn_blocked or self.mapped_turn_obstacle():
             self.halt('Stopped: obstacle inside chassis clearance.')
             return
+        if self.pending is not None and self.pending.done():
+            self.finish_view()
+            self.pending = None
+            if self.phase == 'idle':
+                return
         if self.phase == 'start':
             self.direction = self.entrance[2] + self.task[0]
             self.begin_scan()
         elif self.phase == 'drive':
-            if not self.parking_route and self.due_for_view():
-                self.command()
-                self.en_route = True
-                self.verifying = False
-                self.heading = self.pose[2]
-                self.capture_after = now + .25
-                self.phase = 'capture'
-            else:
+            if not self.parking_route:
+                if not self.pair or not -.1 <= now-self.pair[0] <= .7:
+                    self.command()
+                    self.report('Waiting for fresh RGB-D on search route.')
+                    return
+                self.capture(now, moving=True)
+            if self.phase == 'drive':
                 self.drive(now, check_frontier=False)
         elif self.phase == 'plan':
             self.plan_task(now)
@@ -207,37 +205,35 @@ class DoorNavigator(FrontierExplorer):
             elif now-self.turn_started > 25:
                 self.halt('Stopped: observation turn timed out.')
             else:
-                self.command(angular=max(-.48, min(.48, 1.5*error)))
+                if not self.verifying:
+                    self.capture(now, moving=True)
+                if self.phase == 'turn':
+                    self.command(angular=max(-.48, min(.48, 1.5*error)))
         elif self.phase == 'capture':
             self.capture(now)
         elif self.phase == 'vision':
             self.command()
-            if self.pending.done():
-                self.finish_view()
-
-    def due_for_view(self):
-        if self.last_view_pose is None:
-            return True
-        distance = math.dist(self.pose[:2], self.last_view_pose[:2])
-        angle = abs(wrap(self.pose[2] - self.last_view_pose[2]))
-        return distance >= .9 or (distance >= .25 and angle >= math.radians(35))
 
     def log_view(self, message, jpeg=None):
         line = f'[门观测 {self.view_number}] {message}'
         self.get_logger().info(line)
         self.record(line, jpeg)
 
-    def capture(self, now):
-        self.command()
-        # An old HTTP request may finish after cancellation. Never apply it
-        # to a replacement command, or enqueue a backlog of pictures.
-        if self.pending is not None and not self.pending.done():
+    def capture(self, now, moving=False):
+        if not moving:
+            self.command()
+        # tick consumes the previous result first. images() keeps replacing
+        # the single latest RGB-D pair while the worker is busy.
+        if self.pending is not None:
             return
         if not self.pair or not self.intrinsics or not self.poses or not (
-                self.capture_after <= self.pair[0] and -.1 <= now-self.pair[0] <= .7):
-            self.report('Waiting for synchronized RGB, depth and camera info.')
+                -.1 <= now-self.pair[0] <= .7):
+            if not moving:
+                self.report('Waiting for synchronized RGB, depth and camera info.')
             return
         stamp, rgb, depth = self.pair
+        if stamp <= self.last_frame_stamp or (not moving and stamp < self.capture_after):
+            return
         t, pose = min(self.poses, key=lambda p: abs(p[0]-stamp))
         if abs(t-stamp) > .12:
             return
@@ -256,10 +252,11 @@ class DoorNavigator(FrontierExplorer):
             self.pending = self.vision_worker.submit(observe, self.server, jpeg, metres,
                                                      *self.intrinsics, pose, self.direction)
             self.camera_pose = pose
-            self.last_view_pose = pose
+            self.last_frame_stamp = stamp
+            self.moving_view = moving
             self.view_number += 1
             self.frame_pub.publish(rgb)
-            source = '行进复看' if self.en_route else '门前复核' if self.verifying else '定向观察'
+            source = '运动中检测' if moving else '门前复核' if self.verifying else '定向观察'
             self.log_view(f'{source}，RGB 时间戳 {stamp:.3f}，车位 ({pose[0]:.2f}, {pose[1]:.2f}) m，'
                           f'拍摄航向 {math.degrees(pose[2]):.0f}°，任务方向 {math.degrees(self.direction):.0f}°',
                           jpeg)
@@ -267,13 +264,14 @@ class DoorNavigator(FrontierExplorer):
             self.halt('Camera error: ' + str(exc))
             return
         self.request_id = self.generation
-        self.phase = 'vision'
-        self.report('Checking the observed door with Qwen and depth.')
+        if not moving:
+            self.phase = 'vision'
+            self.report('Checking the observed door with Qwen and depth.')
 
     def finish_view(self):
         if self.request_id != self.generation:
             return
-        if (math.dist(self.pose[:2], self.camera_pose[:2]) > .10 or
+        if not self.moving_view and (math.dist(self.pose[:2], self.camera_pose[:2]) > .10 or
                 abs(wrap(self.pose[2]-self.camera_pose[2])) > .09):
             self.phase = 'turn'
             self.log_view('等待推理期间车身位姿变化，丢弃旧帧，重新取图')
@@ -288,25 +286,28 @@ class DoorNavigator(FrontierExplorer):
         self.log_view(details)
         if point is None:
             self.log_view('没有通过视觉与深度检查的门位，继续观察')
-            self.next_view()
+            if not self.moving_view:
+                self.next_view()
             return
         projection = np.dot(point-self.entrance[:2], normal)
         self.log_view(f'候选门 ({point[0]:.2f}, {point[1]:.2f}) m，相对入口的方向投影 {projection:.2f} m')
         if projection < .6:
             self.log_view('方向投影小于 0.60 m，排除该候选门')
-            self.next_view()
+            if not self.moving_view:
+                self.next_view()
             return
         previous = self.landmark
         if previous is not None and np.linalg.norm(point-previous) > .65:
             self.log_view('与已记录门位相差超过 0.65 m，继续复查')
-            self.next_view()
+            if not self.moving_view:
+                self.next_view()
             return
         self.landmark = point
-        self.en_route = False
-        if previous is not None and self.verifying and self.near_parking_point(point):
+        if not self.moving_view and previous is not None and self.verifying and self.near_parking_point(point):
             self.log_view('门前复核通过，距离与横向误差均满足停车条件')
             self.halt(f'Arrived: {np.dot(point-self.pose[:2], normal):.2f} m from door.')
             return
+        self.command()
         self.log_view('接受门位，按指令距离计算停车点')
         self.set_path([])
         self.phase = 'plan'
