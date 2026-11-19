@@ -1,8 +1,10 @@
 """Interactive terminal for the entrance-relative door task."""
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from std_msgs.msg import String
 
+from .door_run_log import RUN_LOG_DIRECTORY
 from .door_task import parse_command
 
 
@@ -24,9 +26,10 @@ def main():
                     print(exc)
                     continue
             pub.publish(String(data=text))
-    except (KeyboardInterrupt, EOFError):
+    except (KeyboardInterrupt, EOFError, ExternalShutdownException):
         pass
     finally:
+        print(f'四门导航图文日志目录：{RUN_LOG_DIRECTORY}（每次启动仿真生成一个 HTML）', flush=True)
         if rclpy.ok():
             pub.publish(String(data='停车'))
             rclpy.spin_once(node, timeout_sec=.1)

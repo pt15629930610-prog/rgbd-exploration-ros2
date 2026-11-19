@@ -3,45 +3,74 @@
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import math
-from pathlib import Path
 
 import cv2
 from cv_bridge import CvBridge
 import message_filters
 import numpy as np
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 
-from .door_run_log import DoorRunLog
+from .door_run_log import DoorRunLog, RUN_LOG_DIRECTORY
 from .door_snapshot import MODEL, query_image
 from .door_task import door_box, locate_panel, parse_command, search_path
 from .frontier_explorer import FrontierExplorer, seconds, wrap
 from .frontier_planner import astar
 
 
+def candidate_crop(jpeg, box):
+    """Crop the proposed door with a little context, preserving the aspect ratio."""
+    frame = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        raise ValueError('无法解码本帧 JPEG')
+    height, width = frame.shape[:2]
+    left, top, right, bottom = np.array(box) * (width, height, width, height) / 1000
+    pad_x, pad_y = .20 * (right - left), .15 * (bottom - top)
+    x0, x1 = max(0, round(left - pad_x)), min(width, round(right + pad_x))
+    y0, y1 = max(0, round(top - pad_y)), min(height, round(bottom + pad_y))
+    if x0 >= x1 or y0 >= y1:
+        return None
+    cutout = frame[y0:y1, x0:x1]
+    if max(cutout.shape[:2]) < 224:
+        scale = 224 / max(cutout.shape[:2])
+        size = (max(1, round((x1 - x0) * scale)), max(1, round((y1 - y0) * scale)))
+        cutout = cv2.resize(cutout, size, interpolation=cv2.INTER_LINEAR)
+    ok, encoded = cv2.imencode('.jpg', cutout)
+    if not ok:
+        raise ValueError('无法编码候选门局部图')
+    return encoded
+
+
 def observe(server, image, depth, fx, cx, pose, direction):
-    raw = query_image(server, image, 'jpeg',
-                          '只根据这张画面，能辨认出房门本体吗？看见回答“看见”，'
-                          '没有或不确定回答“未见”。只输出一个选项。')
-    details = [f'Qwen 可见性原答={raw.strip()!r}']
-    visible = raw.strip(' \t\n。.!！“”')
-    if visible == '未见':
-        return None, '；'.join(details)
-    if visible != '看见':
-        raise ValueError('无法判读模型回答：' + visible)
     reply = query_image(server, image, 'jpeg',
-                        '查找有门框或把手的房门。图中没有可辨认的门就只输出 []。'
-                        '若可见，只输出门板的二维边界框 [xmin,ymin,xmax,ymax]，坐标归一化到0到1000。')
-    details.append(f'门框原答={reply.strip()!r}')
+                        '请框出画面里最清楚的一扇房门。输出门板的 bbox_2d，'
+                        '坐标范围 0 到 1000。没有房门就输出 []。')
+    details = [f'整帧定位原答={reply.strip()!r}']
     try:
         box = door_box(reply)
-    except ValueError as exc:
-        raise ValueError('；'.join(details) + '；门框解析失败') from exc
-    point = None if box is None else locate_panel(box, depth, fx, cx, pose, direction,
-                                                  details=details)
-    return point, '；'.join(details)
+    except ValueError:
+        return None, details[0] + '；模型未返回有效门框，本帧结果不确定，未检查深度', None
+    if box is None:
+        return None, details[0] + '；RGB 整帧未找到候选门，未检查深度', None
+    crop = candidate_crop(image, box)
+    if crop is None:
+        return None, details[0] + '；候选框小于一个像素，未检查深度', None
+    label = query_image(server, crop, 'jpeg',
+                        '图像中心的主体更像什么？在「房门、柜子、箱子、墙或屏风、其他」中选一个。'
+                        '参考门板、边框和把手等可见结构，棕色本身不足以确认。只输出类别名称。')
+    details.append(f'局部分类原答={label.strip()!r}')
+    if label.strip(' \t\r\n。.!！“”"「」') not in ('门', '房门'):
+        details.append('RGB 局部未确认房门，未检查深度')
+        return None, '；'.join(details), crop
+    details.append('RGB 已确认房门')
+    # The depth image and intrinsics are in the original full-frame coordinates.
+    point = locate_panel(box, depth, fx, cx, pose, direction, details=details)
+    if point is None:
+        details.append('门已看见，本帧未能定位')
+    return point, '；'.join(details), crop
 
 
 class DoorNavigator(FrontierExplorer):
@@ -65,7 +94,7 @@ class DoorNavigator(FrontierExplorer):
         self.sync.registerCallback(self.images)
         self.run_log = None
         try:
-            self.run_log = DoorRunLog(Path.home() / 'door_nav_logs')
+            self.run_log = DoorRunLog(RUN_LOG_DIRECTORY)
             self.get_logger().info(f'本次导航日志：{self.run_log.path}')
             self.record(f'四门导航启动，模型 {MODEL}，服务 {self.server}')
         except OSError as exc:
@@ -249,6 +278,7 @@ class DoorNavigator(FrontierExplorer):
             ok, jpeg = cv2.imencode('.jpg', image)
             if not ok:
                 raise ValueError('JPEG encoding failed')
+            self.request_id = self.generation
             self.pending = self.vision_worker.submit(observe, self.server, jpeg, metres,
                                                      *self.intrinsics, pose, self.direction)
             self.camera_pose = pose
@@ -263,7 +293,6 @@ class DoorNavigator(FrontierExplorer):
         except Exception as exc:
             self.halt('Camera error: ' + str(exc))
             return
-        self.request_id = self.generation
         if not moving:
             self.phase = 'vision'
             self.report('Checking the observed door with Qwen and depth.')
@@ -271,24 +300,23 @@ class DoorNavigator(FrontierExplorer):
     def finish_view(self):
         if self.request_id != self.generation:
             return
+        try:
+            point, details, crop = self.pending.result()
+        except Exception as exc:
+            self.halt('Vision request failed: ' + str(exc))
+            return
+        self.log_view(details, crop)
         if not self.moving_view and (math.dist(self.pose[:2], self.camera_pose[:2]) > .10 or
                 abs(wrap(self.pose[2]-self.camera_pose[2])) > .09):
             self.phase = 'turn'
             self.log_view('等待推理期间车身位姿变化，丢弃旧帧，重新取图')
             self.turn_started = self.get_clock().now().nanoseconds * 1e-9
             return
-        try:
-            point, details = self.pending.result()
-        except Exception as exc:
-            self.halt('Vision request failed: ' + str(exc))
-            return
-        normal = np.array([math.cos(self.direction), math.sin(self.direction)])
-        self.log_view(details)
         if point is None:
-            self.log_view('没有通过视觉与深度检查的门位，继续观察')
             if not self.moving_view:
                 self.next_view()
             return
+        normal = np.array([math.cos(self.direction), math.sin(self.direction)])
         projection = np.dot(point-self.entrance[:2], normal)
         self.log_view(f'候选门 ({point[0]:.2f}, {point[1]:.2f}) m，相对入口的方向投影 {projection:.2f} m')
         if projection < .6:
@@ -372,7 +400,7 @@ def main():
     node = DoorNavigator()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     except Exception as exc:
         node.record(f'导航异常：{exc!r}')
@@ -380,10 +408,13 @@ def main():
     finally:
         if rclpy.ok():
             node.command()
+        if node.pending is not None and node.request_id == node.generation:
+            node.record(f'[门观测 {node.view_number}] 节点退出时还未处理完本帧结果')
         node.record(f'导航节点退出，最后状态：{node.status}')
         if node.run_log is not None:
             try:
                 node.run_log.close()
+                print(f'本次四门导航日志已保存：{node.run_log.path}', flush=True)
             except OSError as exc:
                 node.get_logger().warning(f'关闭导航日志失败：{exc}')
         node.vision_worker.shutdown(wait=False, cancel_futures=True)

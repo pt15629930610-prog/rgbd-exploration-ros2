@@ -14,6 +14,8 @@ from camera_processing.frontier_planner import astar, traversable
 class DoorTaskTests(unittest.TestCase):
     def test_commands(self):
         self.assertEqual(parse_task('抵达对面的门'), (0, 1))
+        self.assertEqual(parse_task('去对面的棕色门，在门前1米停下'), (0, 1))
+        self.assertEqual(parse_task('去左边的那扇棕色房门'), (math.pi/2, 1))
         self.assertEqual(parse_task('去左边的门，在它正前方120厘米停下'), (math.pi/2, 1.2))
         self.assertEqual(parse_task('前往右侧出口，门前0.7米停车'), (-math.pi/2, .7))
         for text in ('去入口的门', '去左边或右边的门', '去左边的门，在门前0.25米停下'):

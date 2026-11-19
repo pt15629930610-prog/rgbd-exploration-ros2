@@ -11,7 +11,8 @@ from .frontier_planner import astar, reachable_cells
 
 def parse_task(text):
     match = re.fullmatch(
-        r'(?:请)?(?:前往|抵达|去|到达|到)?(对面|前方|前面|左边|左侧|右边|右侧)(?:的|这扇|那扇|这个)?(?:门|出口)'
+        r'请?(?:前往|抵达|去|到达|到)?(对面|前方|前面|左边|左侧|右边|右侧)的?(?:这扇|那扇|这个)?'
+        r'(?:(?:棕色的?)?房?门|出口)'
         r'(?:[，,]?(?:在)?(?:它的?|他的?|其)?(?:门)?(?:正)?前(?:方)?(?:大约|大概|约)?'
         r'([0-9]+(?:\.[0-9]+)?)(米|厘米|m|cm)(?:处)?(?:停下|停车|停止)?)?[。！!]?',
         ''.join(text.split()))
@@ -46,9 +47,9 @@ def parse_command(text):
 
 
 def door_box(answer):
-    raw = answer.strip()
+    raw = re.sub(r'^json\b\s*', '', answer.strip(), count=1, flags=re.I)
     if raw.startswith('```') and raw.endswith('```'):
-        raw = raw.partition('\n')[2][:-3].strip()
+        raw = re.sub(r'^```(?:json)?\s*', '', raw[:-3], count=1, flags=re.I)
     box = json.loads(raw)
     if box == []:
         return None

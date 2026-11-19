@@ -7,6 +7,9 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 
+RUN_LOG_DIRECTORY = Path.home() / 'door_nav_logs'
+
+
 class DoorRunLog:
     def __init__(self, directory):
         directory.mkdir(parents=True, exist_ok=True)
@@ -23,7 +26,7 @@ class DoorRunLog:
         self.file.write(f'<p><time>{timestamp}</time> {escape(message)}</p>\n')
         if jpeg is not None:
             data = base64.b64encode(jpeg).decode('ascii')
-            self.file.write(f'<img alt="本次发给 Qwen 的相机帧" src="data:image/jpeg;base64,{data}">\n')
+            self.file.write(f'<img alt="本次发给 Qwen 的 RGB 图" src="data:image/jpeg;base64,{data}">\n')
         self.file.flush()
 
     def close(self):
