@@ -11,6 +11,24 @@ from camera_processing.frontier_explorer import FrontierExplorer
 
 
 class ScanFeedbackTests(unittest.TestCase):
+    def test_planner_waits_for_safe_start_then_resumes(self):
+        grid = np.zeros((80, 80), dtype=np.int8)
+        start = (40, 40)
+        walk = np.ones_like(grid, dtype=bool)
+        walk[start] = False
+        frontier = np.zeros_like(walk)
+        frontier[38:44, 50] = True
+        node = SimpleNamespace(cell=lambda: start, walk=walk, grid=grid,
+                               resolution=0.05, phase='plan', command=Mock(),
+                               report=Mock(), set_path=Mock(), frontier=frontier,
+                               scanned=[], failed=[], xy=lambda c: (c[1]*.05, c[0]*.05))
+        FrontierExplorer.plan(node, 0.0)
+        node.command.assert_called_with()
+        self.assertEqual(node.phase, 'plan')
+        walk[start] = True
+        FrontierExplorer.plan(node, 0.1)
+        self.assertEqual(node.phase, 'drive')
+
     def setUp(self):
         self.scan = SimpleNamespace(
             pose=(0.0, 0.0, 0.0), phase='scan', last_heading=None,

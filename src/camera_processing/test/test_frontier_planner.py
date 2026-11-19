@@ -5,11 +5,21 @@ import unittest
 import numpy as np
 
 from camera_processing.frontier_planner import (
-    astar, choose_path, clear_segment, frontiers, traversable,
+    astar, choose_path, clear_segment, frontiers, observation_path, traversable,
 )
 
 
 class PlannerTests(unittest.TestCase):
+    def test_observation_near_box_leaves_turning_margin(self):
+        grid = np.zeros((80, 80), dtype=np.int8)
+        grid[40, 50] = 100
+        path = [(40, x) for x in range(20, 39)]
+        trimmed = observation_path(path, grid, 0.05)
+        self.assertEqual(trimmed, path[:-3])
+        self.assertTrue(all(traversable(grid, 0.05)[c] for c in trimmed))
+        grid[40, 50] = 0
+        self.assertEqual(observation_path(path, grid, 0.05), path)
+
     def test_only_measured_free_start_can_exit_margin(self):
         grid = np.zeros((80, 80), dtype=np.int8)
         grid[:, 20] = 100

@@ -13,7 +13,8 @@ from rclpy.signals import SignalHandlerOptions
 from std_msgs.msg import String
 
 from .frontier_planner import (
-    choose_path, clear_segment, frontiers, inside, reachable_cells, traversable,
+    choose_path, clear_segment, frontiers, inside, obstacle_distance,
+    observation_path, reachable_cells, traversable,
 )
 
 
@@ -241,14 +242,23 @@ class FrontierExplorer(Node):
         self.command()
         start = self.cell()
         if not inside(self.walk, start) or not self.walk[start]:
-            self.phase = 'blocked'
-            self.report('Blocked: robot cell is outside known traversable space.')
+            # A new depth observation or settling pose can change this cell.
+            # Stay stopped and re-evaluate on subsequent planning ticks.
+            if not inside(self.walk, start):
+                reason = 'outside map bounds'
+            elif self.grid[start] != 0:
+                reason = f'raw occupancy {self.grid[start]}'
+            else:
+                gap = obstacle_distance(self.grid, start, self.resolution, 1.0)
+                reason = f'free cell in planning margin, obstacle/edge {gap:.2f} m'
+            self.report(f'Waiting for traversable start {start}: {reason}.')
             return
         path = choose_path(self.walk, self.frontier, start, self.resolution,
                            self.scanned, self.failed)
         if path:
             self.confirming = False
-            self.set_path(path)
+            self.frontier_goal = path[-1]
+            self.set_path(observation_path(path, self.grid, self.resolution))
             self.phase = 'drive'
             self.progress_time = now
             self.progress_index = self.index = 0
@@ -276,6 +286,11 @@ class FrontierExplorer(Node):
 
     def drive(self, now):
         start = self.cell()
+        if not inside(self.walk, start) or not self.walk[start]:
+            self.command()
+            self.set_path([])
+            self.phase = 'plan'
+            return
         goal = self.path[-1]
         x, y, yaw = self.pose
         # Settle near the planned observation cell before rotating. A large
@@ -288,7 +303,7 @@ class FrontierExplorer(Node):
         # A frontier typically recedes as the camera approaches. Retain the
         # observation target while there is still a frontier in its vicinity.
         r = math.ceil(0.5 / self.resolution)
-        gy, gx = goal
+        gy, gx = self.frontier_goal
         nearby = self.frontier[max(0, gy-r):gy+r+1, max(0, gx-r):gx+r+1]
         if not nearby.any() or not all(self.walk[c] for c in self.path[self.index:]):
             self.command()

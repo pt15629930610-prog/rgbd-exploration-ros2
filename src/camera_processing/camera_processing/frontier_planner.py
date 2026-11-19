@@ -138,6 +138,35 @@ def choose_path(walk, frontier, start, resolution, scanned, failed):
     return best
 
 
+def obstacle_distance(grid, cell, resolution, limit):
+    """Nearest occupied cell or map edge, capped at the requested distance."""
+    y, x = cell
+    h, w = grid.shape
+    radius = math.ceil(limit / resolution)
+    top, left = max(0, y-radius), max(0, x-radius)
+    window = grid[top:y+radius+1, left:x+radius+1]
+    rows, cols = np.nonzero(window >= 50)
+    edge = min(y+0.5, x+0.5, h-y-0.5, w-x-0.5) * resolution
+    nearest = np.hypot(rows + top - y, cols + left - x).min() * resolution if rows.size else limit
+    return min(limit, edge, nearest)
+
+
+def observation_path(path, grid, resolution):
+    """Prefer room to turn within the last 30 cm of the verified approach."""
+    desired = CLEARANCE_M + 0.20
+    best = len(path) - 1
+    clearance = obstacle_distance(grid, path[best], resolution, desired)
+    distance = 0.0
+    for i in range(best - 1, 0, -1):
+        distance += math.dist(path[i], path[i+1]) * resolution
+        if distance > 0.30 or clearance >= desired:
+            break
+        candidate = obstacle_distance(grid, path[i], resolution, desired)
+        if candidate > clearance:
+            best, clearance = i, candidate
+    return path[:best+1]
+
+
 def clear_segment(walk, start, goal):
     """Supercover of a line between cell centers, including corner contacts."""
     if not inside(walk, start) or not inside(walk, goal) or not walk[start]:
