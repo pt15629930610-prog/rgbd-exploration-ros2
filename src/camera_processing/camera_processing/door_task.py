@@ -108,7 +108,7 @@ def locate_panel(box, depth, fx, cx, pose, direction, *, details=None, panel_mas
     return np.array([np.median(x[valid]), np.median(y[valid])])
 
 
-def search_path(walk, frontier, start, resolution, direction, visited, hint=None):
+def search_path(walk, frontier, start, resolution, direction, visited, hint=None, *, roomy=None):
     rows, cols = np.where(frontier & reachable_cells(walk, start))
     if not rows.size:
         return []
@@ -123,4 +123,4 @@ def search_path(walk, frontier, start, resolution, direction, visited, hint=None
     if not indices.size:
         return []
     i = indices[np.argmax(score[indices])]
-    return astar(walk, start, (int(rows[i]), int(cols[i])))
+    return astar(walk, start, (int(rows[i]), int(cols[i])), roomy=roomy)

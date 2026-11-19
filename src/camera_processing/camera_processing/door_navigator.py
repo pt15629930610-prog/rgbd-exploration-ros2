@@ -19,7 +19,7 @@ from .door_run_log import DoorRunLog, RUN_LOG_DIRECTORY
 from .door_snapshot import MODEL, query_image
 from .door_task import door_box, locate_panel, parse_command, search_path
 from .frontier_explorer import FrontierExplorer, seconds, wrap
-from .frontier_planner import astar, inside, reachable_cells
+from .frontier_planner import astar, inside, reachable_cells, traversable
 
 
 def candidate_crop(frame, box):
@@ -407,6 +407,10 @@ class DoorNavigator(FrontierExplorer):
             self.report('Waiting for occupancy from the latest observation.')
             return
         start = self.cell()
+        if not inside(self.walk, start) or not self.walk[start]:
+            self.report('Waiting for a traversable start cell before driving or turning.')
+            return
+        roomy = traversable(self.grid, self.resolution, clearance=.75)
         hint = None
         if self.landmark is not None:
             if self.near_parking_point(self.landmark):
@@ -418,7 +422,7 @@ class DoorNavigator(FrontierExplorer):
                     math.floor((x-self.origin.x)/self.resolution))
             recent_failure = (self.failed_parking_cell is not None and
                               math.dist(hint, self.failed_parking_cell)*self.resolution < .65)
-            path = [] if recent_failure else astar(self.walk, start, hint)
+            path = [] if recent_failure else astar(self.walk, start, hint, roomy=roomy)
             if path:
                 self.parking_route = True
                 self.report(f'Following parking route to ({x:.2f}, {y:.2f}) m.')
@@ -427,7 +431,7 @@ class DoorNavigator(FrontierExplorer):
             why = '该处最近接近失败' if recent_failure else '当前可通行地图中 A* 未找到路径'
             self.log_view(f'已定位门，停车点 ({x:.2f}, {y:.2f}) m；{why}，改选靠近停车点的 frontier')
         path = search_path(self.walk, self.frontier, start, self.resolution, self.direction,
-                           self.scanned+self.failed, hint)
+                           self.scanned+self.failed, hint, roomy=roomy)
         if path:
             self.parking_route = False
             self.start_drive(path, now)

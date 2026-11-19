@@ -16,8 +16,8 @@ CARDINAL = ((-1, 0), (1, 0), (0, -1), (0, 1))
 DIAGONAL = ((-1, -1), (-1, 1), (1, -1), (1, 1))
 
 
-def traversable(grid, resolution, start=None):
-    radius = math.ceil(CLEARANCE_M / resolution)
+def traversable(grid, resolution, start=None, *, clearance=CLEARANCE_M):
+    radius = math.ceil(clearance / resolution)
     occupied = np.pad(grid >= 50, radius, constant_values=True)
     height, width = grid.shape
     blocked = np.zeros_like(grid, dtype=bool)
@@ -74,7 +74,7 @@ def reachable_cells(walk, start):
     return seen
 
 
-def astar(walk, start, goal):
+def astar(walk, start, goal, *, roomy=None):
     if not all(inside(walk, c) and walk[c] for c in (start, goal)):
         return []
     cost = {start: 0.0}
@@ -97,6 +97,8 @@ def astar(walk, start, goal):
             if dy and dx and not (walk[y + dy, x] and walk[y, x + dx]):
                 continue
             new_cost = distance + (math.sqrt(2) if dy and dx else 1)
+            if roomy is not None and not roomy[nxt]:
+                new_cost += 3
             if new_cost < cost.get(nxt, math.inf):
                 cost[nxt] = new_cost
                 parent[nxt] = cell
