@@ -258,11 +258,7 @@ class FrontierExplorer(Node):
         if path:
             self.confirming = False
             self.frontier_goal = path[-1]
-            self.set_path(observation_path(path, self.grid, self.resolution))
-            self.phase = 'drive'
-            self.progress_time = now
-            self.progress_index = self.index = 0
-            self.best_heading_error = math.inf
+            self.start_drive(observation_path(path, self.grid, self.resolution), now)
             self.report('Following A* path to frontier at (%.2f, %.2f) m.' % self.xy(path[-1]))
         elif not self.confirming:
             connected = reachable_cells(self.walk, start)
@@ -284,7 +280,14 @@ class FrontierExplorer(Node):
             self.phase = 'complete'
             self.report('Complete: no eligible reachable frontier after confirmation scan.')
 
-    def drive(self, now):
+    def start_drive(self, path, now):
+        self.set_path(path)
+        self.phase = 'drive'
+        self.progress_time = now
+        self.progress_index = self.index = 0
+        self.best_heading_error = math.inf
+
+    def drive(self, now, check_frontier=True):
         start = self.cell()
         if not inside(self.walk, start) or not self.walk[start]:
             self.command()
@@ -303,9 +306,12 @@ class FrontierExplorer(Node):
         # A frontier typically recedes as the camera approaches. Retain the
         # observation target while there is still a frontier in its vicinity.
         r = math.ceil(0.5 / self.resolution)
-        gy, gx = self.frontier_goal
-        nearby = self.frontier[max(0, gy-r):gy+r+1, max(0, gx-r):gx+r+1]
-        if not nearby.any() or not all(self.walk[c] for c in self.path[self.index:]):
+        lost_frontier = False
+        if check_frontier:
+            gy, gx = self.frontier_goal
+            nearby = self.frontier[max(0, gy-r):gy+r+1, max(0, gx-r):gx+r+1]
+            lost_frontier = not nearby.any()
+        if lost_frontier or not all(self.walk[c] for c in self.path[self.index:]):
             self.command()
             self.set_path([])
             self.phase = 'plan'

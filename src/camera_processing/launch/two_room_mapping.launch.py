@@ -2,8 +2,8 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess
-from launch.conditions import IfCondition, LaunchConfigurationEquals
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, GroupAction
+from launch.conditions import IfCondition, LaunchConfigurationEquals, UnlessCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 
@@ -61,9 +61,17 @@ def generate_launch_description():
         output='screen',
     )
     return LaunchDescription([
+        DeclareLaunchArgument('vlm_server', default_value='http://127.0.0.1:18080',
+                              description='Qwen server reachable from Ubuntu'),
         DeclareLaunchArgument('world', default_value='two_rooms.sdf',
                               choices=['two_rooms.sdf', 'four_doors.sdf']),
         DeclareLaunchArgument('explore', default_value='false',
                               description='Enable autonomous frontier exploration'),
         simulator, bridge, rgb_bridge, perception, *map_nodes, explorer,
+        GroupAction(condition=LaunchConfigurationEquals('world', 'four_doors.sdf'),
+                    actions=[Node(package='camera_processing', executable='door_navigator',
+                                  name='door_navigator', output='screen',
+                                  condition=UnlessCondition(LaunchConfiguration('explore')),
+                                  parameters=[{'use_sim_time': True, 'pose_topic': pose_feedback,
+                                               'vlm_server': LaunchConfiguration('vlm_server')}])]),
     ])

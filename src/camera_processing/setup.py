@@ -50,6 +50,8 @@ setup(
             'map_accumulator = camera_processing.map_accumulator:main',
             'frontier_explorer = camera_processing.frontier_explorer:main',
             'door_snapshot = camera_processing.door_snapshot:main',
+            'door_navigator = camera_processing.door_navigator:main',
+            'door_console = camera_processing.door_console:main',
             'occ_mapping = camera_processing.occ_mapping:main',
         ],
     },

@@ -16,6 +16,20 @@ from rclpy.utilities import remove_ros_args
 from sensor_msgs.msg import Image
 
 
+def query_image(server, image, image_type, prompt):
+    content = [
+        {'type': 'image_url', 'image_url': {'url': f'data:image/{image_type};base64,' +
+                                           base64.b64encode(image).decode('ascii')}},
+        {'type': 'text', 'text': prompt},
+    ]
+    body = {'model': 'Qwen3-VL-2B-Instruct', 'messages': [{'role': 'user', 'content': content}],
+            'temperature': 0, 'max_tokens': 160}
+    request = Request(server.rstrip('/') + '/v1/chat/completions',
+                      json.dumps(body).encode(), {'Content-Type': 'application/json'})
+    with build_opener(ProxyHandler({})).open(request, timeout=90) as response:
+        return json.load(response)['choices'][0]['message']['content']
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', type=Path, help='New PNG filename')
@@ -45,18 +59,7 @@ def main():
         raise SystemExit('File already exists. Choose a new output filename.')
     print(f'Saved {args.output.resolve()}', flush=True)
     if args.server:
-        content = [
-            {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' +
-                                               base64.b64encode(png).decode('ascii')}},
-            {'type': 'text', 'text': '只根据当前画面判断：能否看到房门？若可见，描述其位置和可见依据。'
-                                    '若遮挡或不确定请说明。'},
-        ]
-        body = {'model': 'Qwen3-VL-2B-Instruct', 'messages': [{'role': 'user', 'content': content}],
-                'temperature': 0, 'max_tokens': 160}
-        request = Request(args.server.rstrip('/') + '/v1/chat/completions',
-                          json.dumps(body).encode(), {'Content-Type': 'application/json'})
         try:
-            with build_opener(ProxyHandler({})).open(request, timeout=90) as response:
-                print(json.load(response)['choices'][0]['message']['content'])
+            print(query_image(args.server, png, 'png', '只根据当前画面判断：能否看到房门？请说明可见依据。'))
         except OSError as exc:
             raise SystemExit(f'Frame saved, but the model server was unreachable: {exc}') from exc

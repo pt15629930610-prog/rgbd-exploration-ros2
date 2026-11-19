@@ -55,6 +55,27 @@ ros2 launch camera_processing two_room_mapping.launch.py
 手动给 `/model/mobile_robot/cmd_vel` 发送速度指令。先观察正前方隔墙，再慢速左转看门口，
 转回时检查同一段墙在全局图里是否重合。用 Ctrl+C 结束 launch。
 
+### 从入口出发，按文字指令在门前停车
+
+四门场景是 10 × 10 米的房间。车出生在入口内侧 1 米，前方屏风和两侧柜子遮挡三扇出口门。门关闭，距离从车体中心量到门板。指令中的方位始终以入口处车辆面朝室内的方向为准。
+
+Windows 用 VMware 虚拟网卡地址启动 D 盘的模型服务。以下示例使用宿主机 VMnet8 的地址。Ubuntu 先检查模型列表，再启动仿真。
+
+```bash
+curl --noproxy '*' --max-time 5 http://192.168.19.1:18080/v1/models
+ros2 launch camera_processing two_room_mapping.launch.py world:=four_doors.sdf vlm_server:=http://192.168.19.1:18080
+```
+
+在另一个已加载工作区环境的终端运行 `ros2 run camera_processing door_console`，输入一条任务，例如
+
+```text
+去对面的门，在门前1.2米停下
+去左边的门，在门前1米停下
+去右边的门，在门前0.8米停下
+```
+
+省略距离时取 1 米，可指定 0.7 至 3 米。输入“停车”取消当前任务，也可以直接输入新任务。四门模式在若干特定方向取图，把 RGB 交给 Qwen，并用同一时刻的深度和车身位姿估计门的位置。未见门时在已知可行区域内用 A* 接近指令方向的 frontier；到门前后面向门重新观察。模型服务不可用时停车，并在 launch 终端报告原因。用 `ros2 topic echo /exploration/status` 可以查看后续状态变化。
+
 ### 自主探索双房间
 
 在 Ubuntu 上编译并加载工作区后，先用 Ctrl+C 结束上一轮仿真，再启动自主模式。

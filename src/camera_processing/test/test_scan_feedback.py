@@ -22,6 +22,7 @@ class ScanFeedbackTests(unittest.TestCase):
                                resolution=0.05, phase='plan', command=Mock(),
                                report=Mock(), set_path=Mock(), frontier=frontier,
                                scanned=[], failed=[], xy=lambda c: (c[1]*.05, c[0]*.05))
+        node.start_drive = lambda path, now: FrontierExplorer.start_drive(node, path, now)
         FrontierExplorer.plan(node, 0.0)
         node.command.assert_called_with()
         self.assertEqual(node.phase, 'plan')
