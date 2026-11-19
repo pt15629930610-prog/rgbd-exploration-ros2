@@ -3,17 +3,17 @@ from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess
-from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration
+from launch.conditions import IfCondition, LaunchConfigurationEquals
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
     share = Path(get_package_share_directory('camera_processing'))
-    world = share / 'worlds' / 'two_rooms.sdf'
+    world = PathJoinSubstitution([str(share), 'worlds', LaunchConfiguration('world')])
     pose_feedback = '/model/mobile_robot/world_odometry'
     simulator = ExecuteProcess(
-        cmd=['ign', 'gazebo', '-r', str(world)],
+        cmd=['ign', 'gazebo', '-r', world],
         additional_env={'LIBGL_DRI3_DISABLE': '1'},
         output='screen',
     )
@@ -36,6 +36,12 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True, 'show_images': False, 'camera_height_m': 0.78}],
         output='screen',
     )
+    rgb_bridge = Node(
+        package='ros_gz_bridge', executable='parameter_bridge',
+        arguments=['/rgbd_camera/image@sensor_msgs/msg/Image[ignition.msgs.Image'],
+        condition=LaunchConfigurationEquals('world', 'four_doors.sdf'),
+        output='screen',
+    )
     map_nodes = [
         Node(
             package='camera_processing',
@@ -55,7 +61,9 @@ def generate_launch_description():
         output='screen',
     )
     return LaunchDescription([
+        DeclareLaunchArgument('world', default_value='two_rooms.sdf',
+                              choices=['two_rooms.sdf', 'four_doors.sdf']),
         DeclareLaunchArgument('explore', default_value='false',
                               description='Enable autonomous frontier exploration'),
-        simulator, bridge, perception, *map_nodes, explorer,
+        simulator, bridge, rgb_bridge, perception, *map_nodes, explorer,
     ])
