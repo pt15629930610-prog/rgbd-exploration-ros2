@@ -3,6 +3,7 @@
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import math
+from pathlib import Path
 
 import cv2
 from cv_bridge import CvBridge
@@ -13,16 +14,14 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 
-from .door_snapshot import query_image
+from .door_run_log import DoorRunLog
+from .door_snapshot import MODEL, query_image
 from .door_task import door_box, locate_panel, parse_command, search_path
 from .frontier_explorer import FrontierExplorer, seconds, wrap
 from .frontier_planner import astar
 
 
-def observe(server, rgb, depth, fx, cx, pose, direction):
-    ok, image = cv2.imencode('.jpg', rgb)
-    if not ok:
-        raise ValueError('JPEG encoding failed')
+def observe(server, image, depth, fx, cx, pose, direction):
     raw = query_image(server, image, 'jpeg',
                           '只根据这张画面，能辨认出房门本体吗？看见回答“看见”，'
                           '没有或不确定回答“未见”。只输出一个选项。')
@@ -64,7 +63,31 @@ class DoorNavigator(FrontierExplorer):
                 for topic in ('image', 'depth_image')]
         self.sync = message_filters.ApproximateTimeSynchronizer(subs, 5, .035)
         self.sync.registerCallback(self.images)
+        self.run_log = None
+        try:
+            self.run_log = DoorRunLog(Path.home() / 'door_nav_logs')
+            self.get_logger().info(f'本次导航日志：{self.run_log.path}')
+            self.record(f'四门导航启动，模型 {MODEL}，服务 {self.server}')
+        except OSError as exc:
+            self.get_logger().warning(f'无法创建导航日志：{exc}')
         self.report('Waiting for /door/task')
+
+    def record(self, message, jpeg=None):
+        if self.run_log is not None:
+            try:
+                self.run_log.event(message, jpeg)
+            except OSError as exc:
+                self.get_logger().warning(f'导航日志写入失败：{exc}')
+                try:
+                    self.run_log.close()
+                except OSError:
+                    pass
+                self.run_log = None
+
+    def report(self, status):
+        if self.status != status:
+            self.record(status)
+        super().report(status)
 
     def images(self, rgb, depth):
         self.pair = (seconds(rgb.header), rgb, depth)
@@ -199,8 +222,10 @@ class DoorNavigator(FrontierExplorer):
         angle = abs(wrap(self.pose[2] - self.last_view_pose[2]))
         return distance >= .9 or (distance >= .25 and angle >= math.radians(35))
 
-    def log_view(self, message):
-        self.get_logger().info(f'[门观测 {self.view_number}] {message}')
+    def log_view(self, message, jpeg=None):
+        line = f'[门观测 {self.view_number}] {message}'
+        self.get_logger().info(line)
+        self.record(line, jpeg)
 
     def capture(self, now):
         self.command()
@@ -225,7 +250,10 @@ class DoorNavigator(FrontierExplorer):
                 raise ValueError('Unexpected depth encoding: ' + depth.encoding)
             if metres.shape != image.shape[:2]:
                 raise ValueError('RGB and depth dimensions differ')
-            self.pending = self.vision_worker.submit(observe, self.server, image, metres,
+            ok, jpeg = cv2.imencode('.jpg', image)
+            if not ok:
+                raise ValueError('JPEG encoding failed')
+            self.pending = self.vision_worker.submit(observe, self.server, jpeg, metres,
                                                      *self.intrinsics, pose, self.direction)
             self.camera_pose = pose
             self.last_view_pose = pose
@@ -233,7 +261,8 @@ class DoorNavigator(FrontierExplorer):
             self.frame_pub.publish(rgb)
             source = '行进复看' if self.en_route else '门前复核' if self.verifying else '定向观察'
             self.log_view(f'{source}，RGB 时间戳 {stamp:.3f}，车位 ({pose[0]:.2f}, {pose[1]:.2f}) m，'
-                          f'拍摄航向 {math.degrees(pose[2]):.0f}°，任务方向 {math.degrees(self.direction):.0f}°')
+                          f'拍摄航向 {math.degrees(pose[2]):.0f}°，任务方向 {math.degrees(self.direction):.0f}°',
+                          jpeg)
         except Exception as exc:
             self.halt('Camera error: ' + str(exc))
             return
@@ -344,9 +373,18 @@ def main():
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
+    except Exception as exc:
+        node.record(f'导航异常：{exc!r}')
+        raise
     finally:
         if rclpy.ok():
             node.command()
+        node.record(f'导航节点退出，最后状态：{node.status}')
+        if node.run_log is not None:
+            try:
+                node.run_log.close()
+            except OSError as exc:
+                node.get_logger().warning(f'关闭导航日志失败：{exc}')
         node.vision_worker.shutdown(wait=False, cancel_futures=True)
         node.destroy_node()
         if rclpy.ok():

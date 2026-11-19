@@ -16,13 +16,16 @@ from rclpy.utilities import remove_ros_args
 from sensor_msgs.msg import Image
 
 
+MODEL = 'Qwen3-VL-2B-Instruct'
+
+
 def query_image(server, image, image_type, prompt):
     content = [
         {'type': 'image_url', 'image_url': {'url': f'data:image/{image_type};base64,' +
                                            base64.b64encode(image).decode('ascii')}},
         {'type': 'text', 'text': prompt},
     ]
-    body = {'model': 'Qwen3-VL-2B-Instruct', 'messages': [{'role': 'user', 'content': content}],
+    body = {'model': MODEL, 'messages': [{'role': 'user', 'content': content}],
             'temperature': 0, 'max_tokens': 160}
     request = Request(server.rstrip('/') + '/v1/chat/completions',
                       json.dumps(body).encode(), {'Content-Type': 'application/json'})

@@ -24,7 +24,7 @@ class DoorDecisions(unittest.TestCase):
     @patch('camera_processing.door_navigator.query_image')
     def test_records_both_model_answers_and_invalid_depth(self, query):
         query.side_effect = ['看见', '[200,100,800,900]']
-        point, detail = observe('', np.zeros((48, 64, 3), np.uint8),
+        point, detail = observe('', b'jpeg',
                                 np.full((48, 64), np.nan), 55., 32., (0., 0., 0.), 0.)
         self.assertIsNone(point)
         for part in ('看见', '[200,100,800,900]', '0/45', '无法定位'):
