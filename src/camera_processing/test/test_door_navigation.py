@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 
 from camera_processing import door_navigator
-from camera_processing.door_navigator import DoorNavigator, observe
+from camera_processing.door_navigator import DoorNavigator, observe, verify_locked_panel
 from camera_processing.door_run_log import DoorRunLog
 from camera_processing.door_task import locate_panel
 from camera_processing.frontier_explorer import FrontierExplorer
@@ -75,6 +75,7 @@ class DoorDecisions(unittest.TestCase):
         node.get_clock.return_value.now.return_value.nanoseconds = 1_000_000_000
         node.phase, node.entrance, node.stamps = 'drive', (0, 0, 0), {'odom': 1.}
         node.turn_blocked = node.parking_route = False
+        node.landmark = None
         node.mapped_turn_obstacle.return_value = False
         node.pending, node.pair = Future(), (1., Mock(), Mock())
         DoorNavigator.tick(node)
@@ -194,7 +195,7 @@ class DoorDecisions(unittest.TestCase):
                                entrance=(-4., 0., 0.),
                                direction=math.pi/2, task=(math.pi/2, 1.),
                                verifying=True, moving_view=False, landmark=np.array([0., 5.]),
-                               candidate=None, recovery_used=False,
+                               candidate=None, recovery_used=False, local_parking=False,
                                next_view=Mock(), phase='vision', log_view=Mock())
         node.near_parking_point = lambda point: DoorNavigator.near_parking_point(node, point)
         node.halt = lambda reason: DoorNavigator.halt(node, reason)
@@ -249,6 +250,126 @@ class DoorDecisions(unittest.TestCase):
         DoorNavigator.finish_view(node)
         node.next_view.assert_called_once()
         node.set_path.assert_not_called()
+
+    def test_logged_left_door_approach_stops_before_tracker_timeout(self):
+        node = self.state()
+        node.pose = (-.28, 10.06, math.radians(42))
+        node.landmark = np.array([-.295, 10.95])  # observations 238 and 240
+        node.phase, node.parking_route, node.verifying = 'drive', True, False
+        node.pending, node.stamps, node.turn_blocked = None, {'odom': 1.}, False
+        node.get_clock, node.drive = Mock(), Mock()
+        node.get_clock.return_value.now.return_value.nanoseconds = 1_000_000_000
+        node.mapped_turn_obstacle = lambda: False
+        node.begin_scan = lambda: DoorNavigator.begin_scan(node)
+        node.next_view = lambda: DoorNavigator.next_view(node)
+        DoorNavigator.tick(node)
+        self.assertEqual(node.phase, 'turn')
+        self.assertTrue(node.verifying)
+        self.assertAlmostEqual(node.heading, math.atan2(.89, -.015))
+        node.command.assert_called_once_with()
+        node.drive.assert_not_called()
+
+    def test_search_leg_ends_on_entering_locked_parking_neighbourhood(self):
+        node = self.state()
+        node.pose = (-1.05, 9.95, 0.)
+        node.landmark = np.array([-.295, 10.95])
+        node.phase, node.parking_route = 'drive', False
+        node.pending, node.stamps, node.turn_blocked = None, {'odom': 1.}, False
+        node.get_clock, node.drive = Mock(), Mock()
+        node.get_clock.return_value.now.return_value.nanoseconds = 1_000_000_000
+        node.mapped_turn_obstacle = lambda: False
+        DoorNavigator.tick(node)
+        self.assertTrue(node.local_parking)
+        self.assertEqual(node.phase, 'plan')
+        node.set_path.assert_called_once_with([])
+        node.drive.assert_not_called()
+
+    def test_parked_frame_uses_locked_panel_and_its_own_timestamp(self):
+        node = self.state()
+        node.pending, node.intrinsics = None, (55., 32.)
+        node.poses, node.capture_after, node.last_frame_stamp = [(1., node.pose)], .95, .8
+        node.pair = (.90, Mock(), SimpleNamespace(encoding='32FC1'))
+        node.vision_worker, node.bridge, node.frame_pub, node.view_number = Mock(), Mock(), Mock(), 7
+        DoorNavigator.capture(node, 1.)
+        node.vision_worker.submit.assert_not_called()
+        rgb, depth = np.zeros((48, 64, 3), np.uint8), np.ones((48, 64), np.float32)
+        node.bridge.imgmsg_to_cv2.side_effect = [rgb, depth]
+        node.pair = (1., node.pair[1], node.pair[2])
+        DoorNavigator.capture(node, 1.)
+        worker, frame, metres, fx, cx, pose, direction, landmark = node.vision_worker.submit.call_args.args
+        self.assertIs(worker, verify_locked_panel)
+        self.assertIs(frame, rgb)
+        self.assertIs(metres, depth)
+        self.assertEqual((fx, cx, pose, direction), (*node.intrinsics, node.pose, node.direction))
+        np.testing.assert_array_equal(landmark, node.landmark)
+        self.assertEqual(node.last_frame_stamp, 1.)
+
+    def test_late_partial_view_keeps_locked_door_center(self):
+        node = self.state()
+        node.landmark = np.array([-.295, 10.95])
+        node.moving_view = True
+        node.pending.set_result((np.array([.31, 10.95]), '门板近景', None))
+        DoorNavigator.finish_view(node)
+        np.testing.assert_allclose(node.landmark, [-.295, 10.95])
+        self.assertEqual(node.phase, 'vision')
+        node.set_path.assert_not_called()
+
+    def test_locked_door_reprojection_requires_visible_brown_at_measured_plane(self):
+        node = self.state()
+        node.landmark = np.array([-.295, 10.95])
+        node.pose = node.camera_pose = (-.28, 9.99, math.radians(76))
+        rgb = np.full((240, 320, 3), (35, 57, 84), np.uint8)
+        ray = math.sin(node.pose[2]) + (160 - np.arange(320))/277. * math.cos(node.pose[2])
+        depth = np.tile(.96/ray, (240, 1)).astype(np.float32)
+        for bad_rgb, bad_depth, yaw in [(rgb, depth-.30, node.pose[2]),
+                                        (np.full_like(rgb, 100), depth, node.pose[2]),
+                                        (rgb, np.full_like(depth, np.inf), node.pose[2]),
+                                        (rgb, depth, -math.pi/2)]:
+            point, _, _ = verify_locked_panel(bad_rgb, bad_depth, 277., 160.,
+                                              (*node.pose[:2], yaw), node.direction, node.landmark)
+            self.assertIsNone(point)
+        result = verify_locked_panel(rgb, depth, 277., 160., node.pose, node.direction, node.landmark)
+        np.testing.assert_allclose(result[0], node.landmark)
+        node.pending.set_result(result)
+        DoorNavigator.finish_view(node)
+        self.assertEqual(node.phase, 'idle')
+        self.assertIn('Arrived: 0.96 m', node.report.call_args.args[0])
+
+    def test_small_reverse_correction_requires_known_clear_rear_segment(self):
+        node = self.state()
+        node.pose, node.landmark = (-.28, 10.22, math.pi/2), np.array([-.295, 10.95])
+        node.adjust_started, node.speed_limit, node.forward_blocked = 1., .05, False
+        node.origin, node.resolution = SimpleNamespace(x=-2., y=8.), .05
+        node.walk = np.ones((80, 80), bool)
+        node.cell = lambda: (math.floor((node.pose[1]-8.)/.05), math.floor((node.pose[0]+2.)/.05))
+        node.phase = 'adjust'
+        DoorNavigator.adjust_standoff(node, 2.)
+        node.command.assert_called_with(-.05)
+        r, c = node.cell()
+        node.walk[r-2, c] = False
+        DoorNavigator.adjust_standoff(node, 2.1)
+        node.command.assert_called_with()
+        self.assertEqual(node.phase, 'plan')
+        node.pose, node.phase, node.begin_scan = (-.28, 9.98, math.pi/2), 'adjust', Mock()
+        DoorNavigator.adjust_standoff(node, 3.)
+        node.command.assert_called_with()
+        node.begin_scan.assert_called_once()
+
+    @patch('camera_processing.door_navigator.search_path')
+    def test_no_reachable_local_parking_cell_holds_at_door(self, frontier_search):
+        node = self.state()
+        node.landmark, node.pose = np.array([-.295, 10.95]), (-.28, 10.18, math.pi/2)
+        node.origin, node.resolution = SimpleNamespace(x=-2., y=8.), .05
+        node.grid = np.full((80, 80), -1, np.int8)
+        node.cell = lambda: (43, 34)
+        node.grid[node.cell()] = 0
+        node.walk, node.frontier = traversable(node.grid, .05), frontiers(node.grid)
+        node.failed_parking_cells = set()
+        node.plan_after, node.stamps = 0., {'global': 1.}
+        DoorNavigator.plan_task(node, 1.)
+        self.assertEqual(node.phase, 'idle')
+        self.assertIn('no safe local route', node.report.call_args.args[0])
+        frontier_search.assert_not_called()
 
     def test_no_frontier_takes_side_views_and_waits_for_new_map(self):
         node = Mock(spec=DoorNavigator)

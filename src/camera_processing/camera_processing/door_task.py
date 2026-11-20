@@ -9,6 +9,17 @@ import numpy as np
 from .frontier_planner import astar, reachable_cells
 
 
+STOP_DISTANCE_TOLERANCE = .14
+STOP_LATERAL_TOLERANCE = .22
+LOCAL_PARKING_RADIUS = 1.0
+
+
+def parking_errors(point, pose, direction, standoff):
+    dx, dy = point - pose[:2]
+    c, s = math.cos(direction), math.sin(direction)
+    return dx*c + dy*s - standoff, -dx*s + dy*c
+
+
 def parse_task(text):
     match = re.fullmatch(
         r'请?(?:前往|抵达|去|到达|到)?(对面|前方|前面|左边|左侧|右边|右侧)的?(?:这扇|那扇|这个)?'
@@ -114,9 +125,10 @@ def search_path(walk, frontier, start, resolution, direction, visited, hint=None
         return []
     dy, dx = (rows-start[0])*resolution, (cols-start[1])*resolution
     score = dx*math.cos(direction) + dy*math.sin(direction) - .15*np.hypot(dx, dy)
+    eligible = np.hypot(dx, dy) > .55
     if hint is not None:
         score = -np.hypot(rows-hint[0], cols-hint[1])*resolution
-    eligible = np.hypot(dx, dy) > .55
+        eligible &= -score <= math.dist(start, hint)*resolution - .20
     for y, x in visited:
         eligible &= np.hypot(rows-y, cols-x)*resolution > .65
     indices = np.flatnonzero(eligible)
@@ -124,3 +136,26 @@ def search_path(walk, frontier, start, resolution, direction, visited, hint=None
         return []
     i = indices[np.argmax(score[indices])]
     return astar(walk, start, (int(rows[i]), int(cols[i])), roomy=roomy)
+
+
+def parking_path(walk, start, resolution, origin, goal, direction, failed, *, local, roomy):
+    """Pick a reachable cell inside the commanded standoff and lateral tolerances."""
+    rows, cols = np.ogrid[:walk.shape[0], :walk.shape[1]]
+    dx = origin[0] + (cols + .5)*resolution - goal[0]
+    dy = origin[1] + (rows + .5)*resolution - goal[1]
+    squared = dx*dx + dy*dy
+    if local:
+        walk = walk & (squared <= (LOCAL_PARKING_RADIUS + resolution)**2)
+    c, s = math.cos(direction), math.sin(direction)
+    eligible = (walk & (abs(dx*c + dy*s) <= STOP_DISTANCE_TOLERANCE) &
+                (abs(-dx*s + dy*c) <= STOP_LATERAL_TOLERANCE))
+    for cell in failed:
+        eligible[cell] = False
+    if not eligible.any():
+        return []
+    candidates = np.nonzero(eligible & reachable_cells(walk, start))
+    if not candidates[0].size:
+        return []
+    best = np.argmin(squared[candidates])
+    end = int(candidates[0][best]), int(candidates[1][best])
+    return astar(walk, start, end, roomy=roomy)

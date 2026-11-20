@@ -29,7 +29,7 @@ class DoorRunLog:
         self.file.write(f'<p><time>{timestamp}</time> {safe}</p>\n')
         if jpeg is not None:
             data = base64.b64encode(jpeg).decode('ascii')
-            self.file.write(f'<img alt="本次发给 Qwen 的 RGB 图" src="data:image/jpeg;base64,{data}">\n')
+            self.file.write(f'<img alt="本次门观测的 RGB 图" src="data:image/jpeg;base64,{data}">\n')
         self.file.flush()
 
     def close(self):

@@ -17,9 +17,12 @@ from std_msgs.msg import String
 from .door_log_sync import windows_log_server
 from .door_run_log import DoorRunLog, RUN_LOG_DIRECTORY
 from .door_snapshot import MODEL, query_image
-from .door_task import door_box, locate_panel, parse_command, search_path
+from .door_task import (
+    LOCAL_PARKING_RADIUS, STOP_DISTANCE_TOLERANCE, STOP_LATERAL_TOLERANCE,
+    door_box, locate_panel, parking_errors, parking_path, parse_command, search_path,
+)
 from .frontier_explorer import FrontierExplorer, seconds, wrap
-from .frontier_planner import astar, inside, reachable_cells, traversable
+from .frontier_planner import clear_segment, inside, reachable_cells, traversable
 
 
 def candidate_crop(frame, box):
@@ -40,6 +43,41 @@ def candidate_crop(frame, box):
     if not ok:
         raise ValueError('无法编码候选门局部图')
     return encoded
+
+
+def brown_panel_mask(frame):
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    return cv2.inRange(hsv, (3, 45, 25), (32, 255, 255)).astype(bool)
+
+
+def verify_locked_panel(frame, depth, fx, cx, pose, direction, landmark):
+    """Check a patch of the previously identified door in a fresh stationary RGB-D pair."""
+    height, width = depth.shape
+    normal = np.array([math.cos(direction), math.sin(direction)])
+    tangent = np.array([-normal[1], normal[0]])
+    forward = np.array([math.cos(pose[2]), math.sin(pose[2])])
+    left = np.array([-forward[1], forward[0]])
+    delta = landmark - pose[:2]
+    patches = delta + np.linspace(-.20, .20, 9)[:, None]*tangent
+    z_expected = patches @ forward
+    in_front = z_expected > .1
+    cols = np.rint(cx - fx*(patches[in_front] @ left)/z_expected[in_front]).astype(int)
+    cols = cols[(cols >= 0) & (cols < width)]
+    rows = np.rint(np.linspace(.30, .70, 5)*(height-1)).astype(int)
+    z = depth[np.ix_(rows, cols)]
+    brown = brown_panel_mask(frame)[np.ix_(rows, cols)]
+    ray_normal = forward @ normal + (cx-cols)/fx * (left @ normal)
+    offset = float(delta @ normal)
+    with np.errstate(invalid='ignore'):
+        residual = z*ray_normal - offset
+    matches = brown & np.isfinite(z) & (z > .1) & (z < 4.99) & (abs(residual) <= .10)
+    count = int(np.count_nonzero(matches))
+    detail = (f'已锁定门的 RGB-D 复核：预测门板上有 {count}/45 个采样同时符合棕色与门面深度'
+              '（要求至少 32 个，门面误差 ≤0.10 m）')
+    if count < 32:
+        return None, detail, None
+    shift = float(np.median(residual[matches]))
+    return landmark + shift*normal, detail + f'，实测车体距门面 {offset+shift:.2f} m', None
 
 
 def observe(server, image, depth, fx, cx, pose, direction):
@@ -68,9 +106,8 @@ def observe(server, image, depth, fx, cx, pose, direction):
         return None, '；'.join(details), crop
     details.append('Qwen 局部判为房门')
     # The depth image and intrinsics are in the original full-frame coordinates.
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    panel = cv2.inRange(hsv, (3, 45, 25), (32, 255, 255)).astype(bool)
-    point = locate_panel(box, depth, fx, cx, pose, direction, details=details, panel_mask=panel)
+    point = locate_panel(box, depth, fx, cx, pose, direction, details=details,
+                         panel_mask=brown_panel_mask(frame))
     return point, '；'.join(details), crop
 
 
@@ -166,7 +203,8 @@ class DoorNavigator(FrontierExplorer):
         self.speed_limit = .16 if speed is None else speed
         self.failed.clear()
         self.scanned.clear()
-        self.failed_parking_cell = None
+        self.failed_parking_cells = set()
+        self.local_parking = False
         self.route_failures = 0
         self.view_number = 0
         self.last_frame_stamp = -math.inf
@@ -178,15 +216,16 @@ class DoorNavigator(FrontierExplorer):
         self.set_path([])
         self.verifying = (self.landmark is not None and
                           self.near_parking_point(self.landmark))
-        offset = self.task[0]
-        toward_center = -1 if offset > 0 else 1
         if self.verifying:
-            offsets = (0,)
-        elif confirming:
-            offsets = (toward_center * 1.40, -toward_center * 1.40, 0.)
+            self.local_parking = True
+            dx, dy = self.landmark - self.pose[:2]
+            self.headings = deque([math.atan2(dy, dx)] * 3)
+            self.report('At parking distance. Facing the locked door for RGB-D verification.')
         else:
-            offsets = (0, toward_center*.85, -toward_center*.85)
-        self.headings = deque(self.direction + angle for angle in offsets)
+            toward_center = -1 if self.task[0] > 0 else 1
+            offsets = ((toward_center*1.40, -toward_center*1.40, 0.) if confirming
+                       else (0, toward_center*.85, -toward_center*.85))
+            self.headings = deque(self.direction + angle for angle in offsets)
         self.next_view()
 
     def next_view(self):
@@ -196,7 +235,7 @@ class DoorNavigator(FrontierExplorer):
             self.turn_started = self.get_clock().now().nanoseconds * 1e-9
         else:
             if self.verifying:
-                self.halt('Door could not be confirmed at the parking point.')
+                self.halt('Holding at the locked door: 3 fresh RGB-D frames could not confirm parking.')
                 return
             cell = self.cell()
             if cell not in self.scanned:
@@ -230,6 +269,19 @@ class DoorNavigator(FrontierExplorer):
             self.direction = self.entrance[2] + self.task[0]
             self.begin_scan()
         elif self.phase == 'drive':
+            if self.landmark is not None:
+                if self.near_parking_point(self.landmark):
+                    self.command()
+                    self.begin_scan()
+                    return
+                errors = parking_errors(self.landmark, self.pose, self.direction, self.task[1])
+                if not self.local_parking and math.hypot(*errors) <= LOCAL_PARKING_RADIUS:
+                    self.local_parking = True
+                    self.command()
+                    self.set_path([])
+                    self.phase = 'plan'
+                    self.report('Door nearby. Planning a local parking approach.')
+                    return
             if not self.parking_route:
                 if not self.pair or not -.1 <= now-self.pair[0] <= .7:
                     self.command()
@@ -240,6 +292,8 @@ class DoorNavigator(FrontierExplorer):
                 self.drive(now, check_frontier=False)
         elif self.phase == 'plan':
             self.plan_task(now)
+        elif self.phase == 'adjust':
+            self.adjust_standoff(now)
         elif self.phase == 'turn':
             error = wrap(self.heading-self.pose[2])
             if abs(error) <= .055:
@@ -294,8 +348,14 @@ class DoorNavigator(FrontierExplorer):
             if not ok:
                 raise ValueError('JPEG encoding failed')
             self.request_id = self.generation
-            self.pending = self.vision_worker.submit(observe, self.server, jpeg, metres,
-                                                     *self.intrinsics, pose, self.direction)
+            checking_parking = not moving and self.verifying
+            if checking_parking:
+                self.pending = self.vision_worker.submit(verify_locked_panel, image, metres,
+                                                         *self.intrinsics, pose, self.direction,
+                                                         self.landmark.copy())
+            else:
+                self.pending = self.vision_worker.submit(observe, self.server, jpeg, metres,
+                                                         *self.intrinsics, pose, self.direction)
             self.camera_pose = pose
             self.last_frame_stamp = stamp
             self.moving_view = moving
@@ -310,7 +370,8 @@ class DoorNavigator(FrontierExplorer):
             return
         if not moving:
             self.phase = 'vision'
-            self.report('Checking the observed door with Qwen and depth.')
+            self.report('Verifying parking with fresh RGB-D.' if checking_parking
+                        else 'Checking the observed door with Qwen and depth.')
 
     def finish_view(self):
         if self.request_id != self.generation:
@@ -323,15 +384,36 @@ class DoorNavigator(FrontierExplorer):
         self.log_view(details, crop)
         if not self.moving_view and (math.dist(self.pose[:2], self.camera_pose[:2]) > .10 or
                 abs(wrap(self.pose[2]-self.camera_pose[2])) > .09):
-            self.phase = 'turn'
             self.log_view('等待推理期间车身位姿变化，丢弃旧帧，重新取图')
-            self.turn_started = self.get_clock().now().nanoseconds * 1e-9
+            if self.verifying:
+                self.next_view()
+            else:
+                self.phase = 'turn'
+                self.turn_started = self.get_clock().now().nanoseconds * 1e-9
             return
         if point is None:
             if not self.moving_view:
-                self.next_view()
+                if self.verifying and not self.near_parking_point(self.landmark):
+                    self.retry_parking('chassis shifted outside parking tolerance during alignment')
+                else:
+                    self.next_view()
             return
         normal = np.array([math.cos(self.direction), math.sin(self.direction)])
+        if self.landmark is not None:
+            # A search frame can finish after the controller has switched to parking.
+            if self.moving_view:
+                return
+            if not self.verifying or np.linalg.norm(point-self.landmark) > .65:
+                self.next_view()
+                return
+            if self.near_parking_point(point):
+                self.log_view('门前复核通过，距离与横向误差均满足停车条件')
+                self.halt(f'Arrived: {np.dot(point-self.pose[:2], normal):.2f} m from door.')
+            else:
+                self.landmark = point
+                self.retry_parking('measured offset outside parking tolerance', adjust=True)
+            return
+
         projection = np.dot(point-self.entrance[:2], normal)
         self.log_view(f'候选门 ({point[0]:.2f}, {point[1]:.2f}) m，相对入口的方向投影 {projection:.2f} m')
         if projection < .6:
@@ -339,61 +421,92 @@ class DoorNavigator(FrontierExplorer):
             if not self.moving_view:
                 self.next_view()
             return
-        previous = self.landmark
-        if previous is None:
-            if self.candidate is None or np.linalg.norm(point - self.candidate[0]) > .65:
-                self.candidate = (point, self.camera_pose)
-                self.log_view('首次候选，继续当前搜索，从另一视角复核门位')
-                if not self.moving_view:
-                    self.next_view()
-                return
-            first, pose = self.candidate
-            if (math.dist(pose[:2], self.camera_pose[:2]) < .15 and
-                    abs(wrap(pose[2] - self.camera_pose[2])) < math.radians(6)):
-                self.log_view('视角变化不足，保留候选并继续搜索')
-                if not self.moving_view:
-                    self.next_view()
-                return
-            point = (first + point) / 2
-            self.candidate = None
-            self.log_view('两个不同视角的门位一致')
-        if previous is not None and np.linalg.norm(point-previous) > .65:
-            self.log_view('与已记录门位相差超过 0.65 m，继续复查')
+        if self.candidate is None or np.linalg.norm(point - self.candidate[0]) > .65:
+            self.candidate = (point, self.camera_pose)
+            self.log_view('首次候选，继续当前搜索，从另一视角复核门位')
             if not self.moving_view:
                 self.next_view()
             return
-        self.landmark = point
-        finishing_side_views = self.recovery_used and self.phase in ('turn', 'capture', 'vision')
-        if not self.verifying and (previous is not None or finishing_side_views):
+        first, pose = self.candidate
+        if (math.dist(pose[:2], self.camera_pose[:2]) < .15 and
+                abs(wrap(pose[2] - self.camera_pose[2])) < math.radians(6)):
+            self.log_view('视角变化不足，保留候选并继续搜索')
             if not self.moving_view:
                 self.next_view()
             return
-        if not self.moving_view and previous is not None and self.verifying and self.near_parking_point(point):
-            self.log_view('门前复核通过，距离与横向误差均满足停车条件')
-            self.halt(f'Arrived: {np.dot(point-self.pose[:2], normal):.2f} m from door.')
-            return
+        self.landmark = (first + point)/2
+        self.candidate = None
+        self.recovery_used = False
+        self.route_failures = 0
         self.command()
-        self.log_view('接受门位，按指令距离计算停车点')
+        self.log_view('两个不同视角的门位一致，锁定门位 (%.2f, %.2f) m，按指令距离停车' %
+                      tuple(self.landmark))
         self.set_path([])
         self.phase = 'plan'
 
     def near_parking_point(self, point):
-        normal = np.array([math.cos(self.direction), math.sin(self.direction)])
-        delta = point-self.pose[:2]
-        lateral = abs(-normal[1]*delta[0] + normal[0]*delta[1])
-        return abs(np.dot(delta, normal)-self.task[1]) <= .14 and lateral <= .22
+        distance, lateral = parking_errors(point, self.pose, self.direction, self.task[1])
+        return (abs(distance) <= STOP_DISTANCE_TOLERANCE and
+                abs(lateral) <= STOP_LATERAL_TOLERANCE)
+
+    def adjust_standoff(self, now):
+        """Correct a small longitudinal error while facing the door, including after turn drift."""
+        error, lateral = parking_errors(self.landmark, self.pose, self.direction, self.task[1])
+        yaw = self.pose[2]
+        heading_error = wrap(yaw - self.direction)
+        if (abs(error) > .45 or abs(lateral) > STOP_LATERAL_TOLERANCE or
+                abs(heading_error) > math.radians(20) or now - self.adjust_started > 14.):
+            self.command()
+            self.phase = 'plan'
+            return
+        if abs(error) <= .07:
+            self.command()
+            self.begin_scan()
+            return
+        # Check the entire correction, including behind the robot on a reverse move.
+        travel = error / math.cos(heading_error)
+        x = self.pose[0] + travel*math.cos(yaw)
+        y = self.pose[1] + travel*math.sin(yaw)
+        end = (math.floor((y-self.origin.y)/self.resolution),
+               math.floor((x-self.origin.x)/self.resolution))
+        if ((error > 0 and self.forward_blocked) or not clear_segment(self.walk, self.cell(), end) or
+                abs(lateral - travel*math.sin(heading_error)) > STOP_LATERAL_TOLERANCE):
+            self.command()
+            self.phase = 'plan'
+            return
+        self.command(math.copysign(min(self.speed_limit, .08, abs(error)*.65), error))
 
     def route_arrived(self):
+        if self.parking_route:
+            if self.near_parking_point(self.landmark):
+                self.begin_scan()
+            else:
+                self.retry_goal('route ended outside parking tolerance')
+            return
         self.route_failures = 0
         self.recovery_used = False
-        self.failed_parking_cell = None
         super().route_arrived()
 
+    def retry_parking(self, reason, *, adjust=False):
+        self.command()
+        self.set_path([])
+        self.verifying = False
+        self.route_failures += 1
+        if self.route_failures >= 4:
+            self.halt(f'Holding: 4 failed approaches to the locked door. {reason}.')
+            return
+        self.phase = 'adjust' if adjust else 'plan'
+        if adjust:
+            self.adjust_started = self.get_clock().now().nanoseconds * 1e-9
+        self.report(f'Parking retry {self.route_failures}/4 at the locked door: {reason}.')
+
     def retry_goal(self, reason):
+        if self.parking_route:
+            self.failed_parking_cells.add(self.path[-1])
+            self.retry_parking(reason)
+            return
         self.command()
         self.failed.append(self.path[-1])
-        if self.parking_route:
-            self.failed_parking_cell = self.path[-1]
         self.route_failures += 1
         if self.route_failures >= 4:
             self.halt(f'Stopped after 4 consecutive failed approaches: {reason}.')
@@ -416,20 +529,24 @@ class DoorNavigator(FrontierExplorer):
             if self.near_parking_point(self.landmark):
                 self.begin_scan()
                 return
-            x, y = self.landmark - self.task[1]*np.array(
+            goal = self.landmark - self.task[1]*np.array(
                 [math.cos(self.direction), math.sin(self.direction)])
+            x, y = goal
             hint = (math.floor((y-self.origin.y)/self.resolution),
                     math.floor((x-self.origin.x)/self.resolution))
-            recent_failure = (self.failed_parking_cell is not None and
-                              math.dist(hint, self.failed_parking_cell)*self.resolution < .65)
-            path = [] if recent_failure else astar(self.walk, start, hint, roomy=roomy)
+            self.local_parking = self.local_parking or math.dist(self.pose[:2], goal) <= LOCAL_PARKING_RADIUS
+            path = parking_path(self.walk, start, self.resolution, (self.origin.x, self.origin.y),
+                                goal, self.direction, self.failed_parking_cells,
+                                local=self.local_parking, roomy=roomy)
             if path:
                 self.parking_route = True
-                self.report(f'Following parking route to ({x:.2f}, {y:.2f}) m.')
+                self.report('Following parking route to (%.2f, %.2f) m.' % self.xy(path[-1]))
                 self.start_drive(path, now)
                 return
-            why = '该处最近接近失败' if recent_failure else '当前可通行地图中 A* 未找到路径'
-            self.log_view(f'已定位门，停车点 ({x:.2f}, {y:.2f}) m；{why}，改选靠近停车点的 frontier')
+            if self.local_parking:
+                self.halt('Holding at the locked door: no safe local route to the requested standoff.')
+                return
+            self.log_view(f'已锁定门，停车区 ({x:.2f}, {y:.2f}) m 暂无可达点，只考虑更近的 frontier')
         path = search_path(self.walk, self.frontier, start, self.resolution, self.direction,
                            self.scanned+self.failed, hint, roomy=roomy)
         if path:

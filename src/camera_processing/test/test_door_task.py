@@ -7,7 +7,9 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
-from camera_processing.door_task import door_box, locate_panel, parse_command, parse_task, search_path
+from camera_processing.door_task import (
+    door_box, locate_panel, parking_path, parse_command, parse_task, search_path,
+)
 from camera_processing.frontier_planner import astar, traversable
 
 
@@ -59,6 +61,26 @@ class DoorTaskTests(unittest.TestCase):
         frontier[[3, 57], 30] = True
         self.assertGreater(search_path(walk, frontier, (30, 30), .05, math.pi/2, [])[-1][0], 30)
         self.assertLess(search_path(walk, frontier, (30, 30), .05, -math.pi/2, [])[-1][0], 30)
+
+    def test_locked_goal_frontier_must_advance_towards_parking(self):
+        walk = np.ones((80, 80), bool)
+        frontier = np.zeros_like(walk)
+        frontier[20, 35] = True
+        start, hint = (45, 35), (70, 35)
+        self.assertEqual(search_path(walk, frontier, start, .05, 0., [], hint), [])
+        frontier[61, 35] = True
+        self.assertEqual(search_path(walk, frontier, start, .05, 0., [], hint)[-1], (61, 35))
+
+    def test_failed_parking_cell_allows_clear_neighbour_on_same_door(self):
+        walk = np.ones((80, 80), bool)
+        start, goal, origin = (40, 26), (.025, .025), (-2., -2.)
+        failed = {(40, 40)}
+        walk[40, 41] = False
+        path = parking_path(walk, start, .05, origin, goal, math.pi/2, failed, local=True, roomy=walk)
+        self.assertEqual(path[0], start)
+        self.assertLessEqual(math.dist(path[-1], (40, 40)), 1.1)
+        self.assertNotIn(path[-1], failed)
+        self.assertTrue(all(walk[cell] for cell in path))
 
     def test_greenhouse_aisles_and_parking_access_from_entrance(self):
         sdf = Path(__file__).resolve().parents[1]/'worlds'/'four_doors.sdf'
