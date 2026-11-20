@@ -86,8 +86,8 @@ class DoorTaskTests(unittest.TestCase):
         sdf = Path(__file__).resolve().parents[1]/'worlds'/'four_doors.sdf'
         world = ET.parse(sdf).getroot().find('world')
         resolution = .05
-        origin = np.array([-8., -12.])
-        grid = np.zeros((480, 320), dtype=np.int8)
+        origin = np.array([-8., -14.])
+        grid = np.zeros((560, 320), dtype=np.int8)
 
         def pose(element):
             return np.fromstring(element.findtext('pose', '0 0 0 0 0 0'), sep=' ')
@@ -108,8 +108,8 @@ class DoorTaskTests(unittest.TestCase):
             row = [m for m in beds if np.sign(pose(m)[0]) == row_sign]
             self.assertEqual([m.findtext("link/visual/geometry/mesh/uri") for m in
                               sorted(row, key=lambda m: pose(m)[1])],
-                             ['meshes/potted_bench.dae', 'meshes/strawberry_bed.dae',
-                              'meshes/strawberry_bed.dae', 'meshes/potted_bench.dae'])
+                             ['meshes/potted_bench.dae', 'meshes/lettuce_bed.dae', 'meshes/strawberry_bed.dae',
+                              'meshes/strawberry_bed.dae', 'meshes/lettuce_bed.dae', 'meshes/potted_bench.dae'])
 
         # Rasterize the actual static walls and planting hardware at chassis height.
         for model in models.values():
@@ -129,6 +129,14 @@ class DoorTaskTests(unittest.TestCase):
                 lo, hi = cell(center - half), cell(center + half)
                 grid[lo[0]:hi[0]+1, lo[1]:hi[1]+1] = 100
         walk = traversable(grid, resolution)
+        # Check every cell along the specified loop and right exit, with planner inflation.
+        route = [(-6, 0), (0, 0), (0, 3.11), (5.94, 3.11), (5.94, 0),
+                 (0, 0), (0, -9.7), (2.62, -9.7), (2.62, -12.5)]
+        for a, b in zip(route, route[1:]):
+            for xy in np.linspace(a, b, 160):
+                self.assertTrue(walk[cell(xy)], xy)
+        self.assertTrue(walk[cell(np.array([3.8, -6.21]))])
+        self.assertFalse(walk[cell(np.array([4.82, -6.21]))])
         for name, expected in [('front', (7, 0)), ('left', (0, 11)), ('right', (0, -11))]:
             wall = models[f'{name}_wall_and_door']
             door = pose(wall)[:2]

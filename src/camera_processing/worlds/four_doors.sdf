@@ -923,26 +923,6 @@
         </box>
       </geometry>
     </collision>
-    <visual name="wall_1">
-      <pose>0 3.825 0.41 0 0 0</pose>
-      <geometry>
-        <box>
-          <size>0.12 6.35 0.82</size>
-        </box>
-      </geometry>
-      <material>
-        <ambient>.60 .64 .60 1</ambient>
-        <diffuse>.60 .64 .60 1</diffuse>
-      </material>
-    </visual>
-    <collision name="wall_1">
-      <pose>0 3.825 1.7 0 0 0</pose>
-      <geometry>
-        <box>
-          <size>0.12 6.35 3.4</size>
-        </box>
-      </geometry>
-    </collision>
     <visual name="jamb_1">
       <pose>-0.03 0.615 1.025 0 0 0</pose>
       <geometry>
@@ -1101,20 +1081,6 @@
       <cast_shadows>false</cast_shadows>
       <transparency>0.38</transparency>
     </visual>
-    <visual name="glazing_1">
-      <pose>0 3.825 2.11 0 0 0</pose>
-      <geometry>
-        <box>
-          <size>0.054 6.35 2.58</size>
-        </box>
-      </geometry>
-      <material>
-        <ambient>0.7 0.82 0.81 1</ambient>
-        <diffuse>0.7 0.82 0.81 1</diffuse>
-      </material>
-      <cast_shadows>false</cast_shadows>
-      <transparency>0.38</transparency>
-    </visual>
     <visual name="transom">
       <pose>0 0 2.85 0 0 0</pose>
       <geometry>
@@ -1137,6 +1103,74 @@
         </box>
       </geometry>
     </collision>
+    <visual name="wall_1_0">
+      <pose>0 1.225 0.41 0 0 0</pose>
+      <geometry>
+        <box>
+          <size>0.12 1.15 0.82</size>
+        </box>
+      </geometry>
+      <material>
+        <ambient>.60 .64 .60 1</ambient>
+        <diffuse>.60 .64 .60 1</diffuse>
+      </material>
+    </visual>
+    <visual name="wall_1_1">
+      <pose>0 5.225 0.41 0 0 0</pose>
+      <geometry>
+        <box>
+          <size>0.12 3.55 0.82</size>
+        </box>
+      </geometry>
+      <material>
+        <ambient>.60 .64 .60 1</ambient>
+        <diffuse>.60 .64 .60 1</diffuse>
+      </material>
+    </visual>
+    <collision name="wall_1_0">
+      <pose>0 1.225 1.7 0 0 0</pose>
+      <geometry>
+        <box>
+          <size>0.12 1.15 3.4</size>
+        </box>
+      </geometry>
+    </collision>
+    <collision name="wall_1_1">
+      <pose>0 5.225 1.7 0 0 0</pose>
+      <geometry>
+        <box>
+          <size>0.12 3.55 3.4</size>
+        </box>
+      </geometry>
+    </collision>
+    <visual name="glazing_1_0">
+      <pose>0 1.225 2.11 0 0 0</pose>
+      <geometry>
+        <box>
+          <size>0.054 1.15 2.58</size>
+        </box>
+      </geometry>
+      <material>
+        <ambient>0.7 0.82 0.81 1</ambient>
+        <diffuse>0.7 0.82 0.81 1</diffuse>
+      </material>
+      <cast_shadows>false</cast_shadows>
+      <transparency>0.38</transparency>
+    </visual>
+    <visual name="glazing_1_1">
+      <pose>0 5.225 2.11 0 0 0</pose>
+      <geometry>
+        <box>
+          <size>0.054 3.55 2.58</size>
+        </box>
+      </geometry>
+      <material>
+        <ambient>0.7 0.82 0.81 1</ambient>
+        <diffuse>0.7 0.82 0.81 1</diffuse>
+      </material>
+      <cast_shadows>false</cast_shadows>
+      <transparency>0.38</transparency>
+    </visual>
   </link>
 </model>
 
@@ -1183,7 +1217,7 @@
       <pose>0 0 0.008 0 0 0</pose>
       <geometry>
         <box>
-          <size>13.9 3.5 0.006</size>
+          <size>13.9 1.8 0.006</size>
         </box>
       </geometry>
       <material>
@@ -1193,10 +1227,10 @@
       <cast_shadows>false</cast_shadows>
     </visual>
     <visual name="slab_to_right">
-      <pose>0 -6.35 0.008 0 0 0</pose>
+      <pose>0 -5.925 0.008 0 0 0</pose>
       <geometry>
         <box>
-          <size>2.72 9.2 0.006</size>
+          <size>1.8 10.05 0.006</size>
         </box>
       </geometry>
       <material>
@@ -1206,10 +1240,10 @@
       <cast_shadows>false</cast_shadows>
     </visual>
     <visual name="slab_to_left">
-      <pose>0 6.35 0.008 0 0 0</pose>
+      <pose>0 5.925 0.008 0 0 0</pose>
       <geometry>
         <box>
-          <size>2.72 9.2 0.006</size>
+          <size>1.8 10.05 0.006</size>
         </box>
       </geometry>
       <material>
@@ -1222,7 +1256,7 @@
       <pose>-5.6 0 0.012 0 0 0</pose>
       <geometry>
         <box>
-          <size>0.016 3.49 0.003</size>
+          <size>0.016 1.79 0.003</size>
         </box>
       </geometry>
       <material>
@@ -1235,7 +1269,7 @@
       <pose>-2.8 0 0.012 0 0 0</pose>
       <geometry>
         <box>
-          <size>0.016 3.49 0.003</size>
+          <size>0.016 1.79 0.003</size>
         </box>
       </geometry>
       <material>
@@ -1248,7 +1282,7 @@
       <pose>2.8 0 0.012 0 0 0</pose>
       <geometry>
         <box>
-          <size>0.016 3.49 0.003</size>
+          <size>0.016 1.79 0.003</size>
         </box>
       </geometry>
       <material>
@@ -1261,7 +1295,7 @@
       <pose>5.6 0 0.012 0 0 0</pose>
       <geometry>
         <box>
-          <size>0.016 3.49 0.003</size>
+          <size>0.016 1.79 0.003</size>
         </box>
       </geometry>
       <material>
@@ -1274,7 +1308,7 @@
       <pose>0 -8.8 0.012 0 0 0</pose>
       <geometry>
         <box>
-          <size>2.71 0.016 0.003</size>
+          <size>1.79 0.016 0.003</size>
         </box>
       </geometry>
       <material>
@@ -1287,7 +1321,7 @@
       <pose>0 -6 0.012 0 0 0</pose>
       <geometry>
         <box>
-          <size>2.71 0.016 0.003</size>
+          <size>1.79 0.016 0.003</size>
         </box>
       </geometry>
       <material>
@@ -1300,7 +1334,7 @@
       <pose>0 -3.2 0.012 0 0 0</pose>
       <geometry>
         <box>
-          <size>2.71 0.016 0.003</size>
+          <size>1.79 0.016 0.003</size>
         </box>
       </geometry>
       <material>
@@ -1313,7 +1347,7 @@
       <pose>0 3.2 0.012 0 0 0</pose>
       <geometry>
         <box>
-          <size>2.71 0.016 0.003</size>
+          <size>1.79 0.016 0.003</size>
         </box>
       </geometry>
       <material>
@@ -1326,7 +1360,7 @@
       <pose>0 6 0.012 0 0 0</pose>
       <geometry>
         <box>
-          <size>2.71 0.016 0.003</size>
+          <size>1.79 0.016 0.003</size>
         </box>
       </geometry>
       <material>
@@ -1339,7 +1373,7 @@
       <pose>0 8.8 0.012 0 0 0</pose>
       <geometry>
         <box>
-          <size>2.71 0.016 0.003</size>
+          <size>1.79 0.016 0.003</size>
         </box>
       </geometry>
       <material>
@@ -1351,11 +1385,11 @@
   </link>
 </model>
 
-    <!-- Eight planting stations. Each collision is the fixed hardware footprint. -->
+    <!-- Twelve planting stations. Each collision is the fixed hardware footprint. -->
 
 <model name="potted_bench_entrance_right">
   <static>true</static>
-  <pose>-3.4 -7.4 0 0 0 0</pose>
+  <pose>-2.95 -7.76 0 0 0 0</pose>
   <link name="body">
     <visual name="crops_and_container">
       <geometry>
@@ -1390,7 +1424,7 @@
 
 <model name="strawberry_bed_entrance_right">
   <static>true</static>
-  <pose>-3.4 -2.5 0 0 0 0</pose>
+  <pose>-2.95 -1.56 0 0 0 0</pose>
   <link name="body">
     <visual name="crops_and_container">
       <geometry>
@@ -1404,6 +1438,40 @@
       <geometry>
         <box>
           <size>4.02 1.28 0.875</size>
+        </box>
+      </geometry>
+    </collision>
+    <visual name="mat_under_station">
+      <pose>0 0 0.008 0 0 0</pose>
+      <geometry>
+        <box>
+          <size>4.2 1.5 0.006</size>
+        </box>
+      </geometry>
+      <material>
+        <ambient>0.21 0.24 0.21 1</ambient>
+        <diffuse>0.21 0.24 0.21 1</diffuse>
+      </material>
+      <cast_shadows>false</cast_shadows>
+    </visual>
+  </link>
+</model>
+<model name="lettuce_bed_entrance_right">
+  <static>true</static>
+  <pose>-2.95 -4.66 0 0 0 0</pose>
+  <link name="body">
+    <visual name="crops_and_container">
+      <geometry>
+        <mesh>
+          <uri>meshes/lettuce_bed.dae</uri>
+        </mesh>
+      </geometry>
+    </visual>
+    <collision name="planting_station">
+      <pose>0 0 .37 0 0 0</pose>
+      <geometry>
+        <box>
+          <size>4.02 1.28 .74</size>
         </box>
       </geometry>
     </collision>
@@ -1425,7 +1493,7 @@
 
 <model name="strawberry_bed_entrance_left">
   <static>true</static>
-  <pose>-3.4 2.5 0 0 0 3.141593</pose>
+  <pose>-2.95 1.56 0 0 0 3.141593</pose>
   <link name="body">
     <visual name="crops_and_container">
       <geometry>
@@ -1457,10 +1525,44 @@
     </visual>
   </link>
 </model>
+<model name="lettuce_bed_entrance_left">
+  <static>true</static>
+  <pose>-2.95 4.66 0 0 0 3.141593</pose>
+  <link name="body">
+    <visual name="crops_and_container">
+      <geometry>
+        <mesh>
+          <uri>meshes/lettuce_bed.dae</uri>
+        </mesh>
+      </geometry>
+    </visual>
+    <collision name="planting_station">
+      <pose>0 0 .37 0 0 0</pose>
+      <geometry>
+        <box>
+          <size>4.02 1.28 .74</size>
+        </box>
+      </geometry>
+    </collision>
+    <visual name="mat_under_station">
+      <pose>0 0 0.008 0 0 0</pose>
+      <geometry>
+        <box>
+          <size>4.2 1.5 0.006</size>
+        </box>
+      </geometry>
+      <material>
+        <ambient>0.21 0.24 0.21 1</ambient>
+        <diffuse>0.21 0.24 0.21 1</diffuse>
+      </material>
+      <cast_shadows>false</cast_shadows>
+    </visual>
+  </link>
+</model>
 
 <model name="potted_bench_entrance_left">
   <static>true</static>
-  <pose>-3.4 7.4 0 0 0 3.141593</pose>
+  <pose>-2.95 7.76 0 0 0 3.141593</pose>
   <link name="body">
     <visual name="crops_and_container">
       <geometry>
@@ -1495,7 +1597,7 @@
 
 <model name="potted_bench_front_right">
   <static>true</static>
-  <pose>3.4 -7.4 0 0 0 3.141593</pose>
+  <pose>2.95 -7.76 0 0 0 3.141593</pose>
   <link name="body">
     <visual name="crops_and_container">
       <geometry>
@@ -1530,7 +1632,7 @@
 
 <model name="strawberry_bed_front_right">
   <static>true</static>
-  <pose>3.4 -2.5 0 0 0 3.141593</pose>
+  <pose>2.95 -1.56 0 0 0 3.141593</pose>
   <link name="body">
     <visual name="crops_and_container">
       <geometry>
@@ -1544,6 +1646,40 @@
       <geometry>
         <box>
           <size>4.02 1.28 0.875</size>
+        </box>
+      </geometry>
+    </collision>
+    <visual name="mat_under_station">
+      <pose>0 0 0.008 0 0 0</pose>
+      <geometry>
+        <box>
+          <size>4.2 1.5 0.006</size>
+        </box>
+      </geometry>
+      <material>
+        <ambient>0.21 0.24 0.21 1</ambient>
+        <diffuse>0.21 0.24 0.21 1</diffuse>
+      </material>
+      <cast_shadows>false</cast_shadows>
+    </visual>
+  </link>
+</model>
+<model name="lettuce_bed_front_right">
+  <static>true</static>
+  <pose>2.95 -4.66 0 0 0 3.141593</pose>
+  <link name="body">
+    <visual name="crops_and_container">
+      <geometry>
+        <mesh>
+          <uri>meshes/lettuce_bed.dae</uri>
+        </mesh>
+      </geometry>
+    </visual>
+    <collision name="planting_station">
+      <pose>0 0 .37 0 0 0</pose>
+      <geometry>
+        <box>
+          <size>4.02 1.28 .74</size>
         </box>
       </geometry>
     </collision>
@@ -1565,7 +1701,7 @@
 
 <model name="strawberry_bed_front_left">
   <static>true</static>
-  <pose>3.4 2.5 0 0 0 0</pose>
+  <pose>2.95 1.56 0 0 0 0</pose>
   <link name="body">
     <visual name="crops_and_container">
       <geometry>
@@ -1597,10 +1733,44 @@
     </visual>
   </link>
 </model>
+<model name="lettuce_bed_front_left">
+  <static>true</static>
+  <pose>2.95 4.66 0 0 0 0</pose>
+  <link name="body">
+    <visual name="crops_and_container">
+      <geometry>
+        <mesh>
+          <uri>meshes/lettuce_bed.dae</uri>
+        </mesh>
+      </geometry>
+    </visual>
+    <collision name="planting_station">
+      <pose>0 0 .37 0 0 0</pose>
+      <geometry>
+        <box>
+          <size>4.02 1.28 .74</size>
+        </box>
+      </geometry>
+    </collision>
+    <visual name="mat_under_station">
+      <pose>0 0 0.008 0 0 0</pose>
+      <geometry>
+        <box>
+          <size>4.2 1.5 0.006</size>
+        </box>
+      </geometry>
+      <material>
+        <ambient>0.21 0.24 0.21 1</ambient>
+        <diffuse>0.21 0.24 0.21 1</diffuse>
+      </material>
+      <cast_shadows>false</cast_shadows>
+    </visual>
+  </link>
+</model>
 
 <model name="potted_bench_front_left">
   <static>true</static>
-  <pose>3.4 7.4 0 0 0 0</pose>
+  <pose>2.95 7.76 0 0 0 0</pose>
   <link name="body">
     <visual name="crops_and_container">
       <geometry>
@@ -1633,6 +1803,31 @@
   </link>
 </model>
 
+<model name="irrigation_manifold">
+  <static>true</static>
+  <link name="body">
+    <visual name="irrigation_manifold">
+      <pose>4.82 -6.21 .47 0 0 0</pose>
+      <geometry>
+        <box>
+          <size>.25 2.05 .94</size>
+        </box>
+      </geometry>
+      <material>
+        <ambient>.27 .44 .45 1</ambient>
+        <diffuse>.27 .44 .45 1</diffuse>
+      </material>
+    </visual>
+    <collision name="irrigation_manifold">
+      <pose>4.82 -6.21 .47 0 0 0</pose>
+      <geometry>
+        <box>
+          <size>.25 2.05 .94</size>
+        </box>
+      </geometry>
+    </collision>
+  </link>
+</model>
     <model name="mobile_robot">
 
       <!-- 动态模型，不再固定在 Gazebo 世界中 -->

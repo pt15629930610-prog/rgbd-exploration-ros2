@@ -13,7 +13,7 @@ def launch_map_accumulator(context, pose_feedback):
     greenhouse = LaunchConfiguration('world').perform(context) == 'four_doors.sdf'
     return [Node(
         package='camera_processing', executable='map_accumulator', output='screen',
-        parameters=[{'use_sim_time': True, 'map_size_m': [16., 24.] if greenhouse else [12., 12.]}],
+        parameters=[{'use_sim_time': True, 'map_size_m': [16., 28.] if greenhouse else [12., 12.]}],
         remappings=[('/model/mobile_robot/odometry', pose_feedback)],
     )]
 
