@@ -235,19 +235,6 @@ def potted_bench():
     return mesh
 
 
-def lettuce_bed():
-    mesh = Mesh()
-    mesh.box('trough', (0, 0, .36), (4., 1.26, .72))
-    mesh.box('soil', (0, 0, .72), (3.9, 1.17, .04))
-    for x in np.linspace(-1.7, 1.7, 8):
-        for y in (-.3, .3):
-            for i in range(14):
-                inner = i >= 8
-                leaf(mesh, np.array([x, y, .74]), i*2.4, .12 if inner else .22,
-                     .085, .20 if inner else .12, ('basil_light', 'leaf_light'), serrated=True)
-    return mesh
-
-
 def greenhouse_frame():
     mesh = Mesh()
     eave, ridge = EAVE, RIDGE
@@ -276,11 +263,7 @@ def greenhouse_frame():
             for half in (-1, 1):
                 stop = .70 if z < 2.1 else 0.
                 mesh.beam('steel', (side*7, half*stop, z), (side*7, half*11, z), .065)
-                if side == -1 and half == 1 and z < 2.1:
-                    mesh.beam('steel', (stop, -11, z), (1.75, -11, z), .065)
-                    mesh.beam('steel', (3.5, -11, z), (7, -11, z), .065)
-                else:
-                    mesh.beam('steel', (half*stop, side*11, z), (half*7, side*11, z), .065)
+                mesh.beam('steel', (half*stop, side*11, z), (half*7, side*11, z), .065)
     return mesh
 
 
@@ -300,6 +283,5 @@ if __name__ == '__main__':
     OUTPUT.mkdir(parents=True, exist_ok=True)
     strawberry_bed().write('strawberry_bed')
     potted_bench().write('potted_bench')
-    lettuce_bed().write('lettuce_bed')
     greenhouse_frame().write('greenhouse_frame')
     greenhouse_cover().write('greenhouse_cover')
