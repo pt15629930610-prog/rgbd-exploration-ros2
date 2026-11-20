@@ -1,0 +1,84 @@
+<?xml version='1.0' encoding='utf-8'?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset>
+    <created>2026-11-20T00:00:00Z</created>
+    <modified>2026-11-20T00:00:00Z</modified>
+    <unit name="meter" meter="1" />
+    <up_axis>Z_UP</up_axis>
+  </asset>
+  <library_effects>
+    <effect id="film-fx">
+      <profile_COMMON>
+        <technique sid="common">
+          <lambert>
+            <ambient>
+              <color>0.553 0.623 0.630 1</color>
+            </ambient>
+            <diffuse>
+              <color>0.790 0.890 0.900 1</color>
+            </diffuse>
+          </lambert>
+        </technique>
+      </profile_COMMON>
+    </effect>
+  </library_effects>
+  <library_materials>
+    <material id="film" name="film">
+      <instance_effect url="#film-fx" />
+    </material>
+  </library_materials>
+  <library_geometries>
+    <geometry id="greenhouse_cover" name="greenhouse_cover">
+      <mesh>
+        <source id="positions">
+          <float_array id="positions-data" count="18">
+-7 -11 3.4 -7 11 3.4 0 11 5.1 0 -11 5.1 7 -11 3.4 7 11 3.4</float_array>
+          <technique_common>
+            <accessor source="#positions-data" count="6" stride="3">
+              <param name="X" type="float" />
+              <param name="Y" type="float" />
+              <param name="Z" type="float" />
+            </accessor>
+          </technique_common>
+        </source>
+        <source id="normals">
+          <float_array id="normals-data" count="18">
+0.236 0 -0.97175 -0.236 -0 0.97175 0 -1 0 -0 1 -0 0.236 -0 0.97175 -0.236 0 -0.97175</float_array>
+          <technique_common>
+            <accessor source="#normals-data" count="6" stride="3">
+              <param name="X" type="float" />
+              <param name="Y" type="float" />
+              <param name="Z" type="float" />
+            </accessor>
+          </technique_common>
+        </source>
+        <vertices id="vertices">
+          <input semantic="POSITION" source="#positions" />
+        </vertices>
+        <triangles material="film" count="12">
+          <input semantic="VERTEX" source="#vertices" offset="0" />
+          <input semantic="NORMAL" source="#normals" offset="1" />
+          <p>
+0 0 1 0 2 0 2 1 1 1 0 1 0 0 2 0 3 0 3 1 2 1 0 1 0 2 4 2 3 2 3 3 4 3 0 3 4 4 5 4 2 4 2 5 5 5 4 5
+4 4 2 4 3 4 3 5 2 5 4 5 1 2 5 2 2 2 2 3 5 3 1 3</p>
+        </triangles>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <library_visual_scenes>
+    <visual_scene id="main">
+      <node id="model">
+        <instance_geometry url="#greenhouse_cover">
+          <bind_material>
+            <technique_common>
+              <instance_material symbol="film" target="#film" />
+            </technique_common>
+          </bind_material>
+        </instance_geometry>
+      </node>
+    </visual_scene>
+  </library_visual_scenes>
+  <scene>
+    <instance_visual_scene url="#main" />
+  </scene>
+</COLLADA>

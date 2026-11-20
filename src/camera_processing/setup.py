@@ -25,6 +25,7 @@ setup(
             glob('launch/*.launch.py')
         ),
         (os.path.join('share', package_name, 'worlds'), glob('worlds/*.sdf')),
+        (os.path.join('share', package_name, 'worlds', 'meshes'), glob('worlds/meshes/*.dae')),
     ],
 
     install_requires=['setuptools'],

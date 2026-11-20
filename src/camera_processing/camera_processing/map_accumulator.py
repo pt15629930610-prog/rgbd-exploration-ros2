@@ -19,23 +19,8 @@ from std_msgs.msg import String
 # 1. 全局地图参数
 # =====================================================
 
-# 全局地图范围：12m × 12m
-MAP_X_MIN = -6.0
-MAP_X_MAX = 6.0
-
-MAP_Y_MIN = -6.0
-MAP_Y_MAX = 6.0
-
 # 全局地图分辨率
 MAP_RESOLUTION = 0.05
-
-MAP_WIDTH = int(
-    (MAP_X_MAX - MAP_X_MIN) / MAP_RESOLUTION
-)
-
-MAP_HEIGHT = int(
-    (MAP_Y_MAX - MAP_Y_MIN) / MAP_RESOLUTION
-)
 
 # 地图显示窗口刷新频率
 DISPLAY_PERIOD = 0.1
@@ -50,15 +35,16 @@ MAX_ODOM_DT = 0.25
 def mark_chassis_interior(grid, x, y):
     """Seed only unknown cells under the measured chassis, inside its 0.42 m width."""
     radius = .16
-    row = int(np.floor((y - MAP_Y_MIN) / MAP_RESOLUTION))
-    col = int(np.floor((x - MAP_X_MIN) / MAP_RESOLUTION))
+    origin_y, origin_x = (-cells * MAP_RESOLUTION / 2 for cells in grid.shape)
+    row = int(np.floor((y - origin_y) / MAP_RESOLUTION))
+    col = int(np.floor((x - origin_x) / MAP_RESOLUTION))
     if not (0 <= row < grid.shape[0] and 0 <= col < grid.shape[1]):
         return
     cells = int(np.ceil(radius / MAP_RESOLUTION))
     rows = np.arange(max(0, row-cells), min(grid.shape[0], row+cells+1))
     cols = np.arange(max(0, col-cells), min(grid.shape[1], col+cells+1))
-    dy = MAP_Y_MIN + (rows + .5) * MAP_RESOLUTION - y
-    dx = MAP_X_MIN + (cols + .5) * MAP_RESOLUTION - x
+    dy = origin_y + (rows + .5) * MAP_RESOLUTION - y
+    dx = origin_x + (cols + .5) * MAP_RESOLUTION - x
     patch = grid[rows[0]:rows[-1]+1, cols[0]:cols[-1]+1]
     patch[(patch < 0) & (dy[:, None]**2 + dx**2 <= radius**2)] = 0
 
@@ -90,13 +76,20 @@ class MapAccumulator(Node):
 
         super().__init__("map_accumulator")
 
+        size = self.declare_parameter('map_size_m', [12., 12.]).value
+        if len(size) != 2 or not all(np.isfinite(v) and v > 0 for v in size):
+            raise ValueError('map_size_m requires positive finite X and Y lengths')
+        self.map_width, self.map_height = (int(np.ceil(v / MAP_RESOLUTION)) for v in size)
+        self.origin_x = -self.map_width * MAP_RESOLUTION / 2
+        self.origin_y = -self.map_height * MAP_RESOLUTION / 2
+
         # -1: Unknown
         #  0: Free
         # 100: Occupied
 
         # 全局地图内部采用 [y_index, x_index] 排列
         self.global_grid = np.full(
-            (MAP_HEIGHT, MAP_WIDTH),
+            (self.map_height, self.map_width),
             -1,
             dtype=np.int8
         )
@@ -171,7 +164,7 @@ class MapAccumulator(Node):
         )
 
         self.get_logger().info(
-            f"Map Size: {MAP_WIDTH}x{MAP_HEIGHT} | "
+            f"Map Size: {self.map_width}x{self.map_height} | "
             f"Resolution: {MAP_RESOLUTION}m"
         )
 
@@ -185,8 +178,8 @@ class MapAccumulator(Node):
     def path_callback(self, msg):
         if msg.header.frame_id == 'odom':
             self.route_pixels = [
-                (int((p.pose.position.x - MAP_X_MIN) / MAP_RESOLUTION),
-                 MAP_HEIGHT - 1 - int((p.pose.position.y - MAP_Y_MIN) / MAP_RESOLUTION))
+                (int((p.pose.position.x - self.origin_x) / MAP_RESOLUTION),
+                 self.map_height - 1 - int((p.pose.position.y - self.origin_y) / MAP_RESOLUTION))
                 for p in msg.poses
             ]
 
@@ -408,20 +401,20 @@ class MapAccumulator(Node):
         # ---------------------------------------------
 
         gx = np.floor(
-            (global_x - MAP_X_MIN) /
+            (global_x - self.origin_x) /
             MAP_RESOLUTION
         ).astype(np.int32)
 
         gy = np.floor(
-            (global_y - MAP_Y_MIN) /
+            (global_y - self.origin_y) /
             MAP_RESOLUTION
         ).astype(np.int32)
 
         valid = (
             (gx >= 0) &
-            (gx < MAP_WIDTH) &
+            (gx < self.map_width) &
             (gy >= 0) &
-            (gy < MAP_HEIGHT)
+            (gy < self.map_height)
         )
 
         gx = gx[valid]
@@ -475,11 +468,11 @@ class MapAccumulator(Node):
 
         msg.info.resolution = MAP_RESOLUTION
 
-        msg.info.width = MAP_WIDTH
-        msg.info.height = MAP_HEIGHT
+        msg.info.width = self.map_width
+        msg.info.height = self.map_height
 
-        msg.info.origin.position.x = MAP_X_MIN
-        msg.info.origin.position.y = MAP_Y_MIN
+        msg.info.origin.position.x = self.origin_x
+        msg.info.origin.position.y = self.origin_y
         msg.info.origin.position.z = 0.0
 
         msg.info.origin.orientation.w = 1.0
@@ -506,7 +499,7 @@ class MapAccumulator(Node):
         )
 
         image = np.zeros(
-            (MAP_HEIGHT, MAP_WIDTH, 3),
+            (self.map_height, self.map_width, 3),
             dtype=np.uint8
         )
 
@@ -533,22 +526,22 @@ class MapAccumulator(Node):
             1.0 / MAP_RESOLUTION
         )
 
-        for col in range(0, MAP_WIDTH, interval):
+        for col in range(0, self.map_width, interval):
 
             cv2.line(
                 image,
                 (col, 0),
-                (col, MAP_HEIGHT - 1),
+                (col, self.map_height - 1),
                 (180, 180, 180),
                 1
             )
 
-        for row in range(0, MAP_HEIGHT, interval):
+        for row in range(0, self.map_height, interval):
 
             cv2.line(
                 image,
                 (0, row),
-                (MAP_WIDTH - 1, row),
+                (self.map_width - 1, row),
                 (180, 180, 180),
                 1
             )
@@ -574,16 +567,16 @@ class MapAccumulator(Node):
             )
 
             col = int(
-                (rx - MAP_X_MIN) / MAP_RESOLUTION
+                (rx - self.origin_x) / MAP_RESOLUTION
             )
 
-            row = MAP_HEIGHT - 1 - int(
-                (ry - MAP_Y_MIN) / MAP_RESOLUTION
+            row = self.map_height - 1 - int(
+                (ry - self.origin_y) / MAP_RESOLUTION
             )
 
             if (
-                0 <= col < MAP_WIDTH and
-                0 <= row < MAP_HEIGHT
+                0 <= col < self.map_width and
+                0 <= row < self.map_height
             ):
 
                 cv2.circle(
@@ -637,7 +630,7 @@ class MapAccumulator(Node):
         # 标题区域
         header_height = 65 + 16 * len(self.status_lines)
         header = np.zeros(
-            (header_height, MAP_WIDTH, 3),
+            (header_height, self.map_width, 3),
             dtype=np.uint8
         )
 
@@ -676,14 +669,11 @@ class MapAccumulator(Node):
             image
         ))
 
-        scale = 3
+        scale = min(3., 720 / max(self.map_width, self.map_height))
 
         canvas = cv2.resize(
             canvas,
-            (
-                MAP_WIDTH * scale,
-                (MAP_HEIGHT + header_height) * scale
-            ),
+            None, fx=scale, fy=scale,
             interpolation=cv2.INTER_NEAREST
         )
 

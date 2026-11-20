@@ -290,3 +290,9 @@ class DoorDecisions(unittest.TestCase):
         self.assertFalse(traversable(grid, .05)[119, 39])
         grid[119, 42] = 0
         self.assertTrue(traversable(grid, .05)[119, 39])
+
+    def test_chassis_seed_near_side_door_of_rectangular_map(self):
+        grid = np.full((480, 320), -1, np.int8)
+        mark_chassis_interior(grid, 0., 10.)
+        self.assertEqual(grid[440, 160], 0)
+        self.assertEqual(grid[430, 160], -1)
