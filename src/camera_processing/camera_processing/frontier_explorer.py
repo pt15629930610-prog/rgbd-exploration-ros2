@@ -108,16 +108,19 @@ class FrontierExplorer(Node):
 
     def set_path(self, path):
         self.path = path
+        self.publish_points(self.route, (self.xy(cell) for cell in path))
+
+    def publish_points(self, publisher, points):
         route = Path()
         route.header.frame_id = 'odom'
         route.header.stamp = self.get_clock().now().to_msg()
-        for cell in path:
+        for x, y in points:
             point = PoseStamped()
             point.header = route.header
-            point.pose.position.x, point.pose.position.y = self.xy(cell)
+            point.pose.position.x, point.pose.position.y = x, y
             point.pose.orientation.w = 1.0
             route.poses.append(point)
-        self.route.publish(route)
+        publisher.publish(route)
 
     def report(self, status):
         if self.status != status:

@@ -100,6 +100,44 @@ Windows 的 `D:\Qwen3-VL-2B\Start-Qwen-VMnet8.cmd` 随模型启动日志接收�
 
 省略距离时取 1 米，可指定 0.7 至 3 米。输入“停车”取消当前任务，也可以直接输入新任务。四门模式在若干特定方向取图，把 RGB 交给 Qwen，并用同一时刻的深度和车身位姿估计门的位置。未见门时在已知可行区域内用 A* 接近指令方向的 frontier；到门前后面向门重新观察。模型服务不可用时停车，并在 launch 终端报告原因。用 `ros2 topic echo /exploration/status` 可以查看后续状态变化。
 
+### 在窄通道大棚按指令绕行并出棚
+
+`greenhouse_routes.sdf` 是独立的大棚路线实验。站在入口面朝棚内，正前方 6 米是第一个十字路口。12 块种植区里有草莓、生菜和盆栽，行间净宽约 1.82 米，两处灌溉设施形成死胡同。右门的棕色门扇已经滑到两侧，门洞净宽约 1.95 米。入口、左门和对面门关闭。
+
+![从入口左转、绕行、向右出棚的路线与两处封堵](docs/greenhouse-route.png)
+
+1. 在 Windows 双击 `D:\Qwen3-VL-2B\Start-Qwen-VMnet8.cmd`，等模型加载。Ubuntu 终端一运行以下命令。
+
+   ```bash
+   cd ~/robot_ws
+   git switch codex/two-room-mapping
+   git pull --ff-only
+   source /opt/ros/humble/setup.bash
+   colcon build --packages-select camera_processing --symlink-install
+   source install/setup.bash
+   ros2 launch camera_processing two_room_mapping.launch.py world:=greenhouse_routes.sdf vlm_server:=http://192.168.19.1:18080
+   ```
+
+2. 在 Ubuntu 终端二打开指令输入。
+
+   ```bash
+   cd ~/robot_ws
+   source install/setup.bash
+   ros2 run camera_processing route_console
+   ```
+
+3. 输入「经过第一个十字路口左拐，然后前面遇到第一条作物行进去走一圈，然后从大棚的右门出」。小车先到十字路口，沿横道向入口左侧走。遇到第一条行间道时，靠入口的一端被灌溉设施封住，向棚前方可以绕草莓槽一周。它经过四条边回到同一行口，再穿过右门，到门槛外约 1.35 米的目标点停车。途中输入「停车」可取消，输入新的路线会从实际位置接续。
+
+同一动作可以换说法，也可组合等待和返航，例如「先在首个交叉口拐去左侧，沿第一条行间通道巡一圈，原地等两秒，然后回入口」。方位始终使用入口的初始朝向。作物行按从十字路口向指定侧遇到的行间道编号。如果指定的行两端都能形成闭环，需要说清「向棚前方」或「向棚后方」。右侧第二条行间道朝棚前方有封堵，指令要求往该方向绕圈时，程序会在出发前说明原因。
+
+这一版用已知道路简图确定路口、行号、可绕行的边和出口。Qwen 接收各段指令文本；程序核对原文里的方位、序号和秒数，再把动作按顺序绑定到必经点。局部 A* 只使用实时深度图里已观测、满足底盘净空的栅格。走不到必经点会停车。棚内作物品种的在线识别以及陌生路网的自动辨认属于后续实验。
+
+全局图中的青线是整条计划路线，紫线是实测车迹，绿线是当前局部路径。终端和 HTML 日志记录原话、模型动作类别、执行顺序及到点的实测坐标。日志沿用 `~/door_nav_logs/` 以及 Windows 的 `D:\Qwen3-VL-2B\door_nav_logs\`。只想试一句话时，在加载工作区后可运行以下命令，直接列出模型解析和必经点。
+
+```bash
+ros2 run camera_processing route_console --preview '第一个十字路口左转，然后沿第一条作物行走一圈，然后从右门出去' --server http://192.168.19.1:18080
+```
+
 ### 自主探索双房间
 
 在 Ubuntu 上编译并加载工作区后，先用 Ctrl+C 结束上一轮仿真，再启动自主模式。

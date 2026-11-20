@@ -207,6 +207,7 @@ class OCCMapping(Node):
     def __init__(self):
 
         super().__init__('occ_mapping')
+        self.max_obstacle_z = self.declare_parameter('max_obstacle_z_above_camera_m', -1.0).value
 
         # -1：Unknown
         #  0：Free
@@ -271,6 +272,10 @@ class OCCMapping(Node):
     def cloud_callback(self, ground, obstacles):
         self.latest_ground = convert_pointcloud(ground)
         self.latest_obstacles = convert_pointcloud(obstacles)
+        if self.max_obstacle_z >= 0:
+            # An open doorway can have a visible lintel far above the robot.
+            # Only ground and robot-height returns contribute rays to the 2-D map.
+            self.latest_obstacles = self.latest_obstacles[self.latest_obstacles[:, 2] <= self.max_obstacle_z]
         self.observation_stamp = ground.header.stamp
         self.map_dirty = True
 

@@ -102,6 +102,10 @@ class MapAccumulator(Node):
         self.map_count = 0
         self.route_pixels = []
         self.create_subscription(Path, '/exploration/path', self.path_callback, 1)
+        self.itinerary_pixels = []
+        self.trail_pixels = deque(maxlen=3000)
+        if self.declare_parameter('show_itinerary', False).value:
+            self.create_subscription(Path, '/greenhouse/itinerary', self.itinerary_callback, 1)
         self.status_lines = []
         self.create_subscription(String, '/exploration/status', self.status_callback, 1)
 
@@ -177,11 +181,17 @@ class MapAccumulator(Node):
 
     def path_callback(self, msg):
         if msg.header.frame_id == 'odom':
-            self.route_pixels = [
-                (int((p.pose.position.x - self.origin_x) / MAP_RESOLUTION),
+            self.route_pixels = self.path_pixels(msg)
+
+    def path_pixels(self, msg):
+        return [(int((p.pose.position.x - self.origin_x) / MAP_RESOLUTION),
                  self.map_height - 1 - int((p.pose.position.y - self.origin_y) / MAP_RESOLUTION))
-                for p in msg.poses
-            ]
+                for p in msg.poses]
+
+    def itinerary_callback(self, msg):
+        if msg.header.frame_id == 'odom':
+            self.itinerary_pixels = self.path_pixels(msg)
+            self.trail_pixels.clear()
 
     def odom_callback(self, msg):
 
@@ -550,6 +560,12 @@ class MapAccumulator(Node):
         # 9.2 绘制小车位置和朝向
         # ---------------------------------------------
 
+        if self.itinerary_pixels:
+            cv2.polylines(image, [np.asarray(self.itinerary_pixels, dtype=np.int32)],
+                          False, (205, 160, 0), 2)
+            if self.trail_pixels:
+                cv2.polylines(image, [np.asarray(self.trail_pixels, dtype=np.int32)],
+                              False, (145, 40, 160), 1)
         if self.route_pixels:
             cv2.polylines(image, [np.asarray(self.route_pixels, dtype=np.int32)],
                           False, (0, 170, 0), 1)
@@ -578,6 +594,9 @@ class MapAccumulator(Node):
                 0 <= col < self.map_width and
                 0 <= row < self.map_height
             ):
+                if self.itinerary_pixels and (not self.trail_pixels or
+                        np.hypot(col-self.trail_pixels[-1][0], row-self.trail_pixels[-1][1]) >= 2):
+                    self.trail_pixels.append((col, row))
 
                 cv2.circle(
                     image,

@@ -9,11 +9,19 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 
 
-def launch_map_accumulator(context, pose_feedback):
-    greenhouse = LaunchConfiguration('world').perform(context) == 'four_doors.sdf'
+def launch_occupancy_maps(context, pose_feedback):
+    world = LaunchConfiguration('world').perform(context)
+    sizes = {'two_rooms.sdf': [12., 12.], 'four_doors.sdf': [16., 24.],
+             'greenhouse_routes.sdf': [16., 28.]}
+    local = {'use_sim_time': True}
+    if world == 'greenhouse_routes.sdf':
+        local['max_obstacle_z_above_camera_m'] = .27  # 1.05 m from the floor; camera is at .78 m.
     return [Node(
+        package='camera_processing', executable='occ_mapping', output='screen', parameters=[local],
+    ), Node(
         package='camera_processing', executable='map_accumulator', output='screen',
-        parameters=[{'use_sim_time': True, 'map_size_m': [16., 24.] if greenhouse else [12., 12.]}],
+        parameters=[{'use_sim_time': True, 'map_size_m': sizes[world],
+                     'show_itinerary': world == 'greenhouse_routes.sdf'}],
         remappings=[('/model/mobile_robot/odometry', pose_feedback)],
     )]
 
@@ -56,16 +64,9 @@ def generate_launch_description():
         condition=LaunchConfigurationEquals('world', 'four_doors.sdf'),
         output='screen',
     )
-    map_nodes = [
-        Node(
-            package='camera_processing',
-            executable=executable,
-            parameters=[{'use_sim_time': True}],
-            output='screen',
-        )
-        for executable in ('occ_mapping', 'open3d_viewer')
-    ]
-    map_nodes.append(OpaqueFunction(function=launch_map_accumulator, args=[pose_feedback]))
+    cloud_view = Node(package='camera_processing', executable='open3d_viewer', output='screen',
+                      parameters=[{'use_sim_time': True}])
+    occupancy = OpaqueFunction(function=launch_occupancy_maps, args=[pose_feedback])
     explorer = Node(
         package='camera_processing',
         executable='frontier_explorer',
@@ -77,10 +78,16 @@ def generate_launch_description():
         DeclareLaunchArgument('vlm_server', default_value='http://127.0.0.1:18080',
                               description='Qwen server reachable from Ubuntu'),
         DeclareLaunchArgument('world', default_value='two_rooms.sdf',
-                              choices=['two_rooms.sdf', 'four_doors.sdf']),
+                              choices=['two_rooms.sdf', 'four_doors.sdf', 'greenhouse_routes.sdf']),
         DeclareLaunchArgument('explore', default_value='false',
                               description='Enable autonomous frontier exploration'),
-        simulator, bridge, rgb_bridge, perception, *map_nodes, explorer,
+        simulator, bridge, rgb_bridge, perception, cloud_view, occupancy, explorer,
+        GroupAction(condition=LaunchConfigurationEquals('world', 'greenhouse_routes.sdf'),
+                    actions=[Node(package='camera_processing', executable='route_navigator',
+                                  name='greenhouse_route_navigator', output='screen',
+                                  condition=UnlessCondition(LaunchConfiguration('explore')),
+                                  parameters=[{'use_sim_time': True, 'pose_topic': pose_feedback,
+                                               'vlm_server': LaunchConfiguration('vlm_server')}])]),
         GroupAction(condition=LaunchConfigurationEquals('world', 'four_doors.sdf'),
                     actions=[Node(package='camera_processing', executable='door_navigator',
                                   name='door_navigator', output='screen',

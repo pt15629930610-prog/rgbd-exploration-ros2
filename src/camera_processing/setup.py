@@ -53,6 +53,8 @@ setup(
             'door_snapshot = camera_processing.door_snapshot:main',
             'door_navigator = camera_processing.door_navigator:main',
             'door_console = camera_processing.door_console:main',
+            'route_console = camera_processing.route_console:main',
+            'route_navigator = camera_processing.route_navigator:main',
             'occ_mapping = camera_processing.occ_mapping:main',
         ],
     },
