@@ -4,7 +4,7 @@ from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, GroupAction, OpaqueFunction
-from launch.conditions import IfCondition, LaunchConfigurationEquals, UnlessCondition
+from launch.conditions import IfCondition, LaunchConfigurationEquals, LaunchConfigurationNotEquals, UnlessCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 
@@ -21,7 +21,7 @@ def launch_occupancy_maps(context, pose_feedback):
     ), Node(
         package='camera_processing', executable='map_accumulator', output='screen',
         parameters=[{'use_sim_time': True, 'map_size_m': sizes[world],
-                     'show_itinerary': world == 'greenhouse_routes.sdf'}],
+                     'show_trail': world == 'greenhouse_routes.sdf'}],
         remappings=[('/model/mobile_robot/odometry', pose_feedback)],
     )]
 
@@ -61,7 +61,7 @@ def generate_launch_description():
     rgb_bridge = Node(
         package='ros_gz_bridge', executable='parameter_bridge',
         arguments=['/rgbd_camera/image@sensor_msgs/msg/Image[ignition.msgs.Image'],
-        condition=LaunchConfigurationEquals('world', 'four_doors.sdf'),
+        condition=LaunchConfigurationNotEquals('world', 'two_rooms.sdf'),
         output='screen',
     )
     cloud_view = Node(package='camera_processing', executable='open3d_viewer', output='screen',
@@ -83,8 +83,8 @@ def generate_launch_description():
                               description='Enable autonomous frontier exploration'),
         simulator, bridge, rgb_bridge, perception, cloud_view, occupancy, explorer,
         GroupAction(condition=LaunchConfigurationEquals('world', 'greenhouse_routes.sdf'),
-                    actions=[Node(package='camera_processing', executable='route_navigator',
-                                  name='greenhouse_route_navigator', output='screen',
+                    actions=[Node(package='camera_processing', executable='online_navigator',
+                                  name='greenhouse_online_navigator', output='screen',
                                   condition=UnlessCondition(LaunchConfiguration('explore')),
                                   parameters=[{'use_sim_time': True, 'pose_topic': pose_feedback,
                                                'vlm_server': LaunchConfiguration('vlm_server')}])]),

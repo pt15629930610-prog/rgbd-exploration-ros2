@@ -4,23 +4,27 @@ import argparse
 import json
 from threading import Thread
 
-from .greenhouse_roads import compile_route
-from .route_language import interpret
+from .online_language import interpret_online
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--preview', metavar='指令', help='在入口预演解析和道路绑定')
+    parser.add_argument('--preview', metavar='指令', help='调用本地模型预演任务分解')
     parser.add_argument('--server', default='http://192.168.19.1:18080')
     args, ros_args = parser.parse_known_args()
     if args.preview:
         try:
             trace = []
-            steps = interpret(args.server, args.preview, trace)
+            steps = interpret_online(args.server, args.preview, trace)
             print('\n'.join(trace))
-            print(json.dumps(steps, ensure_ascii=False))
-            for index, step in enumerate(compile_route(steps), 1):
-                print(f'{index}. {step.label} {step.point}')
+            print('在线执行步骤（地标位置由运行时观测确定）')
+            for index, step in enumerate(steps, 1):
+                print(f'{index}. {json.dumps(step, ensure_ascii=False)}')
+                if step['do'] == 'unsupported':
+                    if step.get('dependent', True):
+                        print('执行到这里时停车并报告。')
+                        break
+                    print('跳过这项后继续执行后续独立动作。')
         except (ValueError, OSError, KeyError, IndexError, TypeError) as exc:
             parser.exit(1, f'未执行：{exc}\n')
         return
