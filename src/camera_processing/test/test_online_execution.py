@@ -9,6 +9,36 @@ from camera_processing.online_skills import Unmet
 
 
 class ExecutionTests(unittest.TestCase):
+    def test_brake_reposition_then_resume_same_program_after_fresh_maps(self):
+        node = self.robot()
+        node.pose = (0.,0.,0.)
+        node.cell.return_value = (15,15)
+        node.grid = np.zeros((31,31),np.int8)
+        node.resolution = .05
+        node.local_obstacle_distance = 1.67
+        node.turn_blocked = False
+        node.mapped_turn_obstacle.return_value = True
+        node.clearance_hold = node.clearance_recovery = None
+        node.recovery_sites = []
+        node.motion_revision = 0
+        node.stamps = {'local':12., 'global':12.}
+        node.program = iter(['resume current search'])
+        def reposition():
+            yield
+            return True
+        node.retreat_for_turn.side_effect = reposition
+        self.assertFalse(OnlineNavigator.clearance_ready(node))
+        node.now += 3.2
+        self.assertFalse(OnlineNavigator.clearance_ready(node))
+        self.assertFalse(OnlineNavigator.clearance_ready(node))
+        node.mapped_turn_obstacle.return_value = False
+        self.assertFalse(OnlineNavigator.clearance_ready(node))
+        self.assertEqual(node.motion_revision, 1)
+        self.assertFalse(OnlineNavigator.clearance_ready(node))
+        node.stamps = {'local':16., 'global':16.}
+        self.assertTrue(OnlineNavigator.clearance_ready(node))
+        self.assertEqual(next(node.program),'resume current search')
+
     def test_clearance_stops_immediately_and_requires_both_fresh_maps(self):
         node = self.robot()
         node.pose = (0., 0., 0.)
@@ -19,6 +49,8 @@ class ExecutionTests(unittest.TestCase):
         node.mapped_turn_obstacle.return_value = False
         node.turn_blocked = True
         node.clearance_hold = None
+        node.clearance_recovery = None
+        node.recovery_sites = []
         node.stamps = {'local': 12., 'global': 12.}
         self.assertFalse(OnlineNavigator.clearance_ready(node))
         node.command.assert_called_once_with()
@@ -30,7 +62,10 @@ class ExecutionTests(unittest.TestCase):
         node.mapped_turn_obstacle.return_value = True
         self.assertFalse(OnlineNavigator.clearance_ready(node))
         node.now += 3.1
-        with self.assertRaisesRegex(Unmet, '全局触发=True'):
+        node.retreat_for_turn.return_value = iter(())
+        self.assertFalse(OnlineNavigator.clearance_ready(node))
+        node.retreat_for_turn.assert_called_once()
+        with self.assertRaisesRegex(Unmet, '未能安全移至宽处'):
             OnlineNavigator.clearance_ready(node)
 
     def robot(self):

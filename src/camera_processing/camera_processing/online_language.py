@@ -172,6 +172,8 @@ def expand(item, slots):
             seek['area'] = True
     if 'ordinal' in slots:
         seek['ordinal'] = slots['ordinal']
+    if target == 'row' and side in ('front', 'back') and verb != '转向':
+        seek['search_axis'] = seek.pop('side')
     label = item.get('物体名称', '').strip()
     if label not in quote:
         label = ''
@@ -198,6 +200,9 @@ def expand(item, slots):
     if 'ordinal' in slots and not target:
         raise ValueError('序号缺少对应的地标')
 
+    if (target == 'row' and verb in ('穿过', '行驶', '进入', '巡检') and not circuit
+            and re.search(r'穿过|穿行|穿越', quote)):
+        return [seek, {'do': 'enter'}, {'do': 'traverse_row'}]
     if verb == '转向':
         if not side:
             raise ValueError('缺少转向方位')
@@ -300,6 +305,10 @@ def row_steps(item, slots, previous):
         context.pop()
     known_row = bool(context and context[-1].get('target') == 'row')
     named_row = bool(re.search(LANDMARKS['row'], quote))
+    if known_row and re.fullmatch(r'(?:再|然后|接着)?(?:进去|驶入|进入)(?:这条行)?', quote):
+        return [] if entered else [{'do': 'enter'}]
+    if named_row and re.fullmatch(r'(?:然后|接着)?(?:遇到|看到|见到)第'+NUMBER+r'条作物行', quote):
+        return expand(dict(item, 动作='寻找'), slots)
     circuit = re.search(r'绕|闭环|一周', quote)
     reuse = re.search(r'这条行|这行|同一行|刚才那条行|原来的行|加巡', quote)
     requires_circuit = circuit and ('巡' not in quote or re.search(r'闭环|必须绕|务必绕', quote))
@@ -368,7 +377,7 @@ def compile_semantics(answer, instruction, diagnostics=None, prior=()):
                     and any(re.search(pattern, quote) for pattern in LANDMARKS.values())):
                 item = dict(item, 动作='靠近')
             if (set(slots) == {'speed'} and re.fullmatch(
-                    r'(?:请|以|按|用|保持|速度|限速|别超过|设为|改为|为|的|每秒|厘米|公分|毫米|米|秒|行驶|开车|行车|开|[\d.s/cm零〇一二两三四五六七八九十百点半])+', quote)):
+                    r'(?:请|全程|整个过程|一路|始终|以|按|用|保持|速度|限速|别超过|设为|改为|为|的|每秒|厘米|公分|毫米|米|秒|行驶|开车|行车|开|[\d.s/cm零〇一二两三四五六七八九十百点半])+', quote)):
                 steps = [{'do': 'speed'}]
             else:
                 steps = row_steps(item, slots, [*prior, *result])
@@ -467,6 +476,39 @@ def interpret_span(server, instruction, diagnostics, prior=()):
 def interpret_online(server, instruction, diagnostics=None):
     if not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 600:
         raise ValueError('请输入 1～600 字的路线指令')
+    # Bind the entire consequence to a measured blocked-row outcome.
+    branch = re.search(r'(?:如果|要是|若|遇到)?(?:行不通|走不通|前方被堵|遇到封堵)'
+                       r'(?:的时候|时|了)?(?:就|则)(?=(?:去|找|寻找|改去|转去))', instruction)
+    if branch:
+        prefix = interpret_online(server, instruction[:branch.start()].rstrip('，,；; '), diagnostics)
+        if not prefix or prefix[-1]['do'] != 'traverse_row':
+            raise ValueError('遇阻找门需要先指定要穿过的作物行')
+        outcome = instruction[branch.end():].strip('，,。 ')
+        # For an explicit door plus "在门前…停", bind the standoff to the
+        # very same door. A second unrestricted door search loses that identity.
+        door = re.fullmatch(r'(?:去|改去|转去)?(?:寻找|找)?(?P<which>(?:对面|前|后|左|右)'
+                            r'(?:手边|边|侧)?的?(?:那扇)?门)[，,、]?\s*'
+                            r'(?:然后|再)?在(?:这扇|该)?门前(?P<gap>'+NUMBER+r'\s*(?:米|厘米|公分|m|cm))'
+                            r'(?:处|位置)?(?:停下|停车|停住|停)', outcome)
+        if door:
+            consequence = expand({'原文': door['which'], '动作':'寻找', '目标':'门'}, {})
+            consequence.append({'do':'approach', 'distance':measurements(door['gap'])['distance']})
+        else:
+            consequence = interpret_online(server, outcome, diagnostics)
+        if (not consequence or consequence[0].get('target') != 'door'
+                or any(s['do'] not in ('seek', 'approach', 'wait') or
+                       s['do'] == 'seek' and s.get('target') != 'door' for s in consequence)):
+            raise ValueError('未能确认遇阻后找门和停车的完整要求')
+        steps = []
+        for step in consequence:
+            if (steps and step == {'do':'seek','target':'door'} and
+                    steps[-1].get('target') == 'door'):
+                continue
+            steps.append(step)
+        prefix[-1]['if_blocked'] = steps
+        if diagnostics is not None:
+            diagnostics.append('仅当实测行末封堵并返回行口时执行找门分支')
+        return prefix
     # "停留两秒后返航" gives an explicit temporal boundary even without punctuation.
     parts = re.split(r'(?<=[秒钟])后(?=[回返])', instruction)
     if len(parts) > 1 and not CONDITION.search(instruction):

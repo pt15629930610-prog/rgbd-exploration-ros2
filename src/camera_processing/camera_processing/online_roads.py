@@ -86,14 +86,39 @@ class RoadView:
         stops = np.flatnonzero(~safe)
         return float(samples[max(0, stops[0]-1)]) if stops.size else limit
 
-    def observed_dead_end(self, point, yaw):
+    def footprint_clear(self, point, yaw, *, known):
+        # SDF wheel envelope: 0.34 x 0.275 m half-extents. Pad for cell
+        # quantization, sampling between poses and small tracking errors.
+        pad = self.resolution*.71 + .045
+        length, width = .34+pad, .275+pad
+        r, c = self.cell(point)
+        radius = math.ceil(math.hypot(length, width)/self.resolution)+1
+        rows = np.arange(r-radius, r+radius+1)
+        cols = np.arange(c-radius, c+radius+1)
+        x = self.origin[0]+(cols[None, :]+.5)*self.resolution-point[0]
+        y = self.origin[1]+(rows[:, None]+.5)*self.resolution-point[1]
+        co, si = math.cos(yaw), math.sin(yaw)
+        body = (abs(co*x+si*y) <= length) & (abs(co*y-si*x) <= width)
+        rr, cc = np.nonzero(body)
+        rr, cc = rows[rr], cols[cc]
+        if rr.min()<0 or cc.min()<0 or rr.max()>=self.grid.shape[0] or cc.max()>=self.grid.shape[1]:
+            return False
+        cells = self.grid[rr, cc]
+        return bool(np.all(cells == 0 if known else cells < 50))
+
+    def straight_clear(self, point, yaw, distance):
+        samples = max(1, math.ceil(abs(distance)/self.resolution))
+        return all(self.footprint_clear(offset(point, yaw, distance*i/samples), yaw, known=True)
+                   for i in range(samples+1))
+
+    def observed_dead_end(self, point, yaw, *, banks=True):
         """Require a measured cap across the chassis and banks on both sides."""
         def bank(angle, limit, offsets):
             distances = np.arange(.10, limit, self.resolution/2)
             raw, _ = self._sample(point, angle, distances[:, None], np.array(offsets)[None, :])
             return (raw >= 50).any(axis=0).all()
         return (bank(yaw, 1.35, [-.25, 0., .25])
-                and all(bank(yaw+sign*math.pi/2, 1.95, [-.25, 0., .25]) for sign in (-1, 1)))
+                and (not banks or all(bank(yaw+sign*math.pi/2, 1.95, [-.25, 0., .25]) for sign in (-1, 1))))
 
     def _profile(self, point, yaw, horizon, sign):
         # Examine both road shoulders, including a short stretch behind the robot.
@@ -191,6 +216,18 @@ class RoadView:
 
     def path_to(self, point, goal):
         return astar(self.walk, self.cell(point), self.cell(goal))
+
+    def replan_after_turn(self, point, goal, failed):
+        start, end = self.cell(point), self.cell(goal)
+        walk = self.walk.copy()
+        radius = math.ceil(.25/self.resolution)
+        for site in failed:
+            r, c = self.cell(site)
+            if math.dist((r,c), start) <= radius or math.dist((r,c), end) <= radius:
+                continue
+            cv2.circle(walk.view(np.uint8), (c,r), radius, 0, -1)
+        return (astar(walk, start, end, roomy=self.turning_room)
+                or astar(self.walk, start, end, roomy=self.turning_room))
 
     @cached_property
     def clearance_map(self):

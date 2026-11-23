@@ -106,6 +106,53 @@ class DepthExitReplay(OnlineReplay):
 
 
 class OnlineRouteReplayTest(unittest.TestCase):
+    def test_non_exit_turn_recovers_from_inside_planning_margin(self):
+        robot = OnlineReplay()
+        robot.pose = (0., 0., 0.)
+        robot.grid[:] = 0
+        # An obstacle beside the front wheel blocks rotation but permits reverse.
+        robot.grid[cell((.16, .36))] = 100
+        from camera_processing.frontier_planner import traversable
+        robot.walk = traversable(robot.grid, RESOLUTION, robot.cell())
+        robot.view = RoadView(robot.grid, robot.walk, ORIGIN, RESOLUTION)
+        robot.vision_start('door')
+        robot.approach_track.append((-.65, 0.))
+        self.assertTrue(robot.tight_turn(math.pi/2))
+        move = robot.retreat_for_turn()
+        next(move)
+        self.assertLess(robot.linear, 0.)
+        self.assertEqual(robot.angular, 0.)
+        robot.pose = (-.62, 0., 0.)
+        with self.assertRaises(StopIteration) as finished:
+            next(move)
+        self.assertTrue(finished.exception.value)
+
+    def test_front_second_row_patrol_then_left_door(self):
+        class SceneReplay(OnlineReplay):
+            def camera(self):
+                if self.vision_key and self.vision_key[0] == 'crop':
+                    plants = [(x,y) for x in (-4.7,-3.,-1.2,1.2,3.,4.7)
+                              for y in (-7.65,-4.65,-1.55,1.55,4.65,7.65)]
+                    visible = [p for p in plants if abs(wrap(math.atan2(
+                        p[1]-self.pose[1], p[0]-self.pose[0])-self.pose[2])) < math.pi/6]
+                    if visible:
+                        self.crop_point = min(visible, key=lambda p: math.dist(self.here, p))
+                if self.vision_key and self.vision_key[0] == 'door':
+                    self.crop_point = (0.,11.)
+                super().camera()
+        robot = SceneReplay()
+        robot.speed_limit = 1.
+        robot.exercise({'do':'seek','target':'row','search_axis':'front','ordinal':2})
+        gates = [point for msg,point in robot.events if '现场确认 row 第' in msg]
+        self.assertEqual(len(gates), 2)
+        self.assertGreater(math.dist(*gates), 1.)
+        self.assertGreaterEqual(gates[1][0], gates[0][0]-.75)
+        robot.exercise({'do':'enter'})
+        robot.exercise({'do':'patrol'})
+        robot.exercise({'do':'seek','target':'door','side':'left'})
+        robot.exercise({'do':'approach','distance':1.})
+        self.assertAlmostEqual(math.dist(robot.here,(0.,11.)), 1., delta=.22)
+
     def test_tight_exit_turn_requires_an_observed_retreat(self):
         robot = OnlineReplay()
         robot.pose = (0., 0., 0.)
@@ -114,7 +161,7 @@ class OnlineRouteReplayTest(unittest.TestCase):
         robot.walk = robot.grid == 0
         robot.view = RoadView(robot.grid, robot.walk, ORIGIN, RESOLUTION)
         robot.vision_start('exit')
-        self.assertTrue(robot.tight_exit_turn(math.pi))
+        self.assertTrue(robot.tight_turn(math.pi))
         robot.approach_track.append((-.4, 0.))
         robot.walk[cell((-.2, 0.))] = False
         with self.assertRaises(StopIteration) as stopped:
@@ -146,6 +193,30 @@ class OnlineRouteReplayTest(unittest.TestCase):
         robot.exercise({'do': 'seek', 'target': 'door', 'side': 'right'}, next_step='exit')
         robot.exercise({'do': 'exit'})
         self.assertTrue(robot.crossed)
+
+    def test_cross_row_takes_door_branch_only_at_verified_dead_end(self):
+        for side, ordinal, plant, dead_end in [('left',1,(-3.8,1.9),True),
+                                               ('right',2,(-3.,-4.65),False)]:
+            with self.subTest(side=side):
+                class DoorReplay(OnlineReplay):
+                    def camera(self):
+                        if self.vision_key and self.vision_key[0]=='door':
+                            self.crop_point = (0.,11.)
+                        super().camera()
+                robot = DoorReplay()
+                robot.speed_limit = .6
+                robot.crop_point = plant
+                robot.exercise({'do':'turn','side':side})
+                robot.exercise({'do':'seek','target':'row','ordinal':ordinal})
+                robot.exercise({'do':'enter'})
+                robot.exercise({'do':'traverse_row','if_blocked':[
+                    {'do':'seek','target':'door','side':'left'}, {'do':'approach','distance':1.5}]})
+                self.assertEqual(any('确认行末封堵' in m for m,_ in robot.events), dead_end)
+                if dead_end:
+                    self.assertAlmostEqual(math.dist(robot.here,(0.,11.)),1.5,delta=.22)
+                else:
+                    self.assertTrue(any('完成穿行' in m for m,_ in robot.events))
+                    self.assertFalse(any('核实 door' in m for m,_ in robot.events))
 
     def test_first_cross_moves_with_unseen_aisle(self):
         for at in (-1.5, 1.8):

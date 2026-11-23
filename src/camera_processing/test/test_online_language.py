@@ -11,6 +11,26 @@ def compile_items(text, *items):
 
 
 class LanguageTests(unittest.TestCase):
+    def test_scoped_speed_and_axis_do_not_constrain_row_orientation(self):
+        speed = '全程以0.6米/秒的速度行驶'
+        row = '到对面第二条作物行去巡检'
+        plan = compile_items(speed+'，'+row, {'原文':speed, '动作':'调速'},
+                             {'原文':row, '动作':'巡检','目标':'作物行'})
+        self.assertEqual(plan[:2], [{'do':'speed','speed':.6},
+                                   {'do':'seek','target':'row','ordinal':2,'search_axis':'front'}])
+        door = '去对面门前停下'
+        self.assertEqual(compile_items(door, {'原文':door,'动作':'靠近'})[0],
+                         {'do':'seek','target':'door','side':'front'})
+
+    def test_door_and_standoff_belong_to_blocked_branch(self):
+        q = '穿过第二条作物行'
+        with patch('camera_processing.online_language.ask', return_value={
+                '动作序列':[{'原文':q,'动作':'穿过','目标':'作物行'}]}):
+            plan = interpret_online('unused', q+'，遇到行不通的时候就寻找左边的门，在门前1.5米停下')
+        self.assertEqual(plan, [{'do':'seek','target':'row','ordinal':2}, {'do':'enter'},
+                               {'do':'traverse_row','if_blocked':[
+                                   {'do':'seek','target':'door','side':'left'},
+                                   {'do':'approach','distance':1.5}]}])
     def test_patrol_limits_and_reference(self):
         self.assertEqual(measurements('每秒一米，五十米'), {'speed': 1., 'distance': 50.})
         for text in ('每秒1.01米', '五十一米'):

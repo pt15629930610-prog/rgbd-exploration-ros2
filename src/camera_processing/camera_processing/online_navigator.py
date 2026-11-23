@@ -38,6 +38,9 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
         self.vision_key = None
         self.responses = 0
         self.clearance_hold = None
+        self.clearance_recovery = None
+        self.motion_revision = 0
+        self.recovery_sites = []
         self.last_image_log = -math.inf
         self.journal = None
         try:
@@ -66,6 +69,15 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
         super().global_map(msg)
         self.view = RoadView(self.grid, self.walk, (self.origin.x, self.origin.y), self.resolution)
 
+    def local_map(self, msg):
+        super().local_map(msg)
+        if msg.header.frame_id != 'camera_aligned':
+            return
+        info = msg.info
+        rows, cols = np.where(np.asarray(msg.data).reshape(info.height, info.width) >= 50)
+        self.local_hits = (info.origin.position.x+(cols+.5)*info.resolution,
+                           info.origin.position.y+(rows+.5)*info.resolution, info.resolution)
+
     def odometry(self, msg):
         if msg.header.frame_id != 'odom' or msg.child_frame_id != 'base_link':
             return
@@ -75,6 +87,8 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
             self.stop()
             self.entrance = self.feature = self.last_row = None
             self.entered = self.loop_trace = None
+            if hasattr(self, 'approach_track'):
+                self.approach_track.clear()
             self.stamps['local'] = self.stamps['global'] = -math.inf
             previous = None
         elif stamp < self.stamps['odom']:
@@ -88,8 +102,10 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
         if previous is not None and math.dist(previous[:2], self.here) > .65:
             self.stop()
             self.feature = self.last_row = None
+            self.approach_track.clear()
             self.note('位姿出现跳变，任务已停止，先核对定位', 'Stopped: odometry jumped.')
             return
+        self.remember_position()
         if self.portal and previous is not None and crossed_threshold(self.portal, previous, self.here):
             self.crossed = True
         if self.loop_trace is not None:
@@ -98,6 +114,7 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
     def stop(self, *, keep_row=False):
         self.command()
         self.clearance_hold = None
+        self.clearance_recovery = None
         self.clear_path()
         if self.pending is not None:
             self.pending.cancel()
@@ -132,6 +149,7 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
     def execute(self, steps):
         for i, step in enumerate(steps):
             self.step_index = i
+            self.recovery_sites = []
             self.started = self.now
             self.deadline = self.now + max(720.*step.get('count', 1), step.get('seconds', 0.)+30.)
             self.vision_key = None
@@ -145,7 +163,7 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
                 continue
             if 'speed' in step:
                 self.speed_limit = step['speed']
-            if step['do'] not in ('enter', 'loop', 'patrol', 'wait', 'photo', 'inspect', 'speed'):
+            if step['do'] not in ('enter', 'loop', 'patrol', 'traverse_row', 'wait', 'photo', 'inspect', 'speed'):
                 self.entered = self.loop_trace = None
             self.note(f'开始第 {i+1}/{len(steps)} 步 {step}，速度上限 {self.speed_limit:.2f} m/s',
                       f'Online {i+1}/{len(steps)}: {step["do"]}')
@@ -205,6 +223,18 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
         return encoded.tobytes() if ok else None
 
     def clearance_ready(self):
+        if self.clearance_recovery is not None:
+            try:
+                next(self.clearance_recovery)
+            except StopIteration as done:
+                self.clearance_recovery = None
+                self.command()
+                if not done.value:
+                    raise Unmet('净空不足，已检查近期车迹和前方空间，未能安全移至宽处')
+                self.motion_revision += 1
+                self.clearance_stamp = self.stamps['local'], self.stamps['global']
+                self.note('已移至宽处，等待地图更新，再继续原步骤并重算路径')
+            return False
         mapped = self.mapped_turn_obstacle()
         if self.turn_blocked or mapped:
             self.command()
@@ -218,7 +248,11 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
                           jpeg=self.clearance_image())
                 self.clear_path()
             elif self.now-self.clearance_hold >= 3.:
-                raise Unmet('底盘净空持续不足。'+detail)
+                if sum(math.dist(self.here, p) < .35 for p in self.recovery_sites) >= 2:
+                    raise Unmet('同一位置反复触发净空保护，已尝试换向和重规划。'+detail)
+                self.recovery_sites.append(self.here)
+                self.clearance_recovery = self.retreat_for_turn()
+                self.note('净空持续不足，保留当前任务并检查前后脱困通路。'+detail)
             self.clearance_stamp = (self.stamps['local'], self.stamps['global'])
             return False
         if self.clearance_hold is not None:
@@ -255,10 +289,10 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
             self.report('Waiting for fresh RGB-D map and odometry.')
             return
         try:
-            if not self.clearance_ready():
-                return
             if self.now > self.deadline:
                 raise Unmet('该步骤在允许的仿真时间内仍未完成')
+            if not self.clearance_ready():
+                return
             if self.status == 'Waiting for fresh RGB-D map and odometry.':
                 self.report(f'Online step {self.step_index+1}: observations resumed.')
             self.vision_tick()

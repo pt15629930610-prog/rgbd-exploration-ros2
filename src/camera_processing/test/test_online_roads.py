@@ -29,6 +29,14 @@ def crossing(at, *, right=True, blocked=False, blind_right=False, yaw=0.):
 
 
 class OnlineRoadTest(unittest.TestCase):
+    def test_recovery_footprint_requires_known_free_corners(self):
+        grid = np.zeros((80,80), np.int8)
+        road = RoadView(grid, grid == 0, (-2.,-2.), RES)
+        self.assertTrue(road.straight_clear((0.,0.), 0., -.6))
+        grid[road.cell((-.65,.25))] = -1
+        self.assertFalse(road.straight_clear((0.,0.), 0., -.6))
+        grid[road.cell((-.65,.25))] = 100
+        self.assertFalse(road.straight_clear((0.,0.), 0., -.6))
     def test_unknown_or_open_side_does_not_confirm_dead_end(self):
         grid = np.zeros((100, 100), np.int8)
         road = RoadView(grid, grid == 0, (-2.5, -2.5), RES)
