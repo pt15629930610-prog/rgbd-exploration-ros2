@@ -137,7 +137,7 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
                 continue
             if 'speed' in step:
                 self.speed_limit = step['speed']
-            if step['do'] not in ('enter', 'loop', 'wait', 'photo', 'inspect'):
+            if step['do'] not in ('enter', 'loop', 'patrol', 'wait', 'photo', 'inspect', 'speed'):
                 self.entered = self.loop_trace = None
             self.note(f'开始第 {i+1}/{len(steps)} 步 {step}，速度上限 {self.speed_limit:.2f} m/s',
                       f'Online {i+1}/{len(steps)}: {step["do"]}')

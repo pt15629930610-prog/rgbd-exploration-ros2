@@ -12,6 +12,7 @@ from test_greenhouse_route import ORIGIN, RESOLUTION, SimulatedRoute, cell
 
 
 class OnlineReplay(MotionSkills, SimulatedRoute):
+    crop_point = (2., 1.56)
     def __init__(self):
         super().__init__()
         self.course = self.entrance[2]
@@ -33,7 +34,7 @@ class OnlineReplay(MotionSkills, SimulatedRoute):
             # Deterministic visual fixture. Only return a crop if its near canopy
             # is within this exposure's field of view; no map landmarks reach the skill.
             exit = self.vision_key[0] == 'exit'
-            point = (0., -11.) if exit else (2.0, 1.56)
+            point = (0., -11.) if exit else self.crop_point
             angle = math.atan2(point[1]-self.pose[1], point[0]-self.pose[0])
             self.responses += 1
             if abs(wrap(angle-self.pose[2])) < math.pi/6 and math.dist(point, self.here) < 4.9:
@@ -67,6 +68,22 @@ class OnlineReplay(MotionSkills, SimulatedRoute):
 
 
 class OnlineRouteReplayTest(unittest.TestCase):
+    def test_first_row_patrol_returns_from_observed_dead_end_then_exits(self):
+        robot = OnlineReplay()
+        robot.speed_limit = .3
+        robot.crop_point = (-3.8, 1.9)
+        robot.exercise({'do': 'turn', 'side': 'left'})
+        robot.exercise({'do': 'seek', 'target': 'row', 'ordinal': 1})
+        gate = robot.here
+        self.assertLess(math.dist(gate, (-6., 3.11)), .5)
+        robot.exercise({'do': 'enter'})
+        robot.exercise({'do': 'patrol'})
+        self.assertLess(math.dist(robot.here, gate), .3)
+        self.assertTrue(any('完成死胡同巡检' in m for m, _ in robot.events))
+        robot.exercise({'do': 'seek', 'target': 'door', 'side': 'right'}, next_step='exit')
+        robot.exercise({'do': 'exit'})
+        self.assertTrue(robot.crossed)
+
     def test_first_cross_moves_with_unseen_aisle(self):
         for at in (-1.5, 1.8):
             with self.subTest(at=at):

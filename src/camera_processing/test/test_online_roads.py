@@ -29,6 +29,17 @@ def crossing(at, *, right=True, blocked=False, blind_right=False, yaw=0.):
 
 
 class OnlineRoadTest(unittest.TestCase):
+    def test_unknown_or_open_side_does_not_confirm_dead_end(self):
+        grid = np.zeros((100, 100), np.int8)
+        road = RoadView(grid, grid == 0, (-2.5, -2.5), RES)
+        grid[30, :] = grid[70, :] = 100
+        grid[:, 68] = -1
+        self.assertFalse(road.observed_dead_end((0., 0.), 0.))
+        grid[:, 68] = 100
+        self.assertTrue(road.observed_dead_end((0., 0.), 0.))
+        grid[70, 38:62] = 0
+        self.assertFalse(road.observed_dead_end((0., 0.), 0.))
+
     def test_moved_crossing_is_discovered_at_new_position(self):
         for at in (0., 1.73, 3.04):
             with self.subTest(at=at):

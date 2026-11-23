@@ -8,7 +8,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 from .route_language import MODEL
 
 
-VERBS = ['转向', '寻找', '靠近', '进入', '绕行', '穿过', '返回入口', '等待', '行驶', '观察', '拍照', '未支持']
+VERBS = ['转向', '寻找', '靠近', '进入', '绕行', '巡检', '穿过', '返回入口', '等待', '行驶', '观察', '拍照', '未支持']
 TARGETS = {'十字路口': 'crossroad', '通道开口': 'opening', '作物行': 'row',
            '门': 'door', '作物': 'crop', '其他物体': 'object'}
 SIDES = {'左': 'left', '右': 'right', '前': 'front', '后': 'back'}
@@ -25,6 +25,7 @@ PROMPT = """你是温室小车的中文语义解析器。理解整段原话，�
 “找”只需观测；“去…前停”要靠近；“穿门出”要穿过。作物品种、具体物体名填物体名称。
 单说左拐立即转。若指定在十字路口左拐，转向需目标十字路口。只有要求已经通过该路口再转，才加转弯时机。
 绕一圈包括找到作物行、进去、绕回行口，用一个绕行动作表达。遇到第一条可走的岔道进去用进入。
+沿一条作物行巡看、走到尽头折返选巡检。要求绕完整一圈选绕行。“走不通就退回来”指退回本行口。
 “接着前面遇到”表示沿当前行进方向继续观察，不是向入口正前方转向。
 拍照保存现场图，观察描述现场可见情况。禁止、未实现的条件分支、病害诊断、采摘、无从确定的动作选未支持。不能删除条件后执行动作。
 例如“往左转，歇两秒再回起点”输出 {"动作序列":[{"原文":"往左转","动作":"转向","方位":"左"},{"原文":"歇两秒","动作":"等待"},{"原文":"再回起点","动作":"返回入口"}]}。
@@ -263,7 +264,58 @@ def expand(item, slots):
     raise ValueError('当前无法验证此动作的完成条件')
 
 
-def compile_semantics(answer, instruction, diagnostics=None):
+ROW_RETURN = re.compile(r'(?:如果|要是|若|如果发现)?(?:走不通|前方不通|遇到封堵|遇到死胡同|前方被堵)(?:时|了)?(?:就|则)?(?:沿原路|原路)?(?:退回|返回|回到|退到)(?:来|去|作物行入口|行口|该行入口)')
+PATROL = re.compile(r'巡(?:检|查|视|一趟|一遍)|沿(?:这|该)行看看')
+
+
+def row_steps(item, slots, previous):
+    quote = item['原文']
+    retreat = ROW_RETURN.search(quote)
+    if retreat:
+        if retreat.end() != len(quote):
+            return [_blocked('退回行口后的动作需要单独解析：' + quote)]
+        if retreat.start() == 0:
+            if previous and previous[-1]['do'] == 'patrol':
+                return []  # The patrol already owns the return to its measured gate.
+            return [_blocked('退回条件缺少对应的作物行巡检：' + quote)]
+        quote = quote[:retreat.start()].rstrip('，,')
+        item = dict(item, 原文=quote)
+    if CONDITION.search(quote):
+        return expand(item, slots)
+    context = list(previous)
+    while context and context[-1]['do'] in ('inspect', 'photo', 'wait'):
+        context.pop()
+    entered = bool(context and context[-1]['do'] == 'enter')
+    if entered:
+        context.pop()
+    known_row = bool(context and context[-1].get('target') == 'row')
+    named_row = bool(re.search(LANDMARKS['row'], quote))
+    circuit = re.search(r'圈|闭环|一周', quote)
+    patrol = (PATROL.search(quote) or item['动作'] == '巡检') and (known_row or named_row) and not circuit
+    if circuit and known_row and not named_row and item['动作'] == '巡检':
+        item = dict(item, 动作='绕行', 目标='作物行')
+    if not retreat and re.search(r'走不通|遇到封堵|前方不通|遇到死胡同', quote):
+        return [_blocked('尚不能确认封堵时要求的动作：' + quote)]
+    if retreat and not patrol:
+        return [_blocked('无法绑定退回条件：' + item['原文'])]
+    if patrol:
+        if any(k in slots for k in ('distance', 'seconds')):
+            return [_blocked('巡检距离或时长尚不能核实：' + quote)]
+        steps = expand(dict(item, 动作='进入', 目标='作物行'), slots)
+        if steps[-1]['do'] == 'unsupported':
+            return steps
+        steps.append({'do': 'patrol'})
+    else:
+        steps = expand(item, slots)
+    if known_row and not named_row and re.search(r'进去|进入|绕|巡', quote) and not re.search(r'另|下一|再找|第', quote):
+        if steps[0].get('target') == 'row' and len(steps[0]) == 2:
+            steps = steps[1:]
+        if entered and steps and steps[0]['do'] == 'enter':
+            steps = steps[1:]
+    return steps
+
+
+def compile_semantics(answer, instruction, diagnostics=None, prior=()):
     if not isinstance(answer, dict) or set(answer) != {'动作序列'}:
         raise ValueError('模型回复缺少动作序列')
     items = answer['动作序列']
@@ -289,7 +341,15 @@ def compile_semantics(answer, instruction, diagnostics=None):
                     and re.search(r'去|到|靠近|门前|门口', quote)
                     and any(re.search(pattern, quote) for pattern in LANDMARKS.values())):
                 item = dict(item, 动作='靠近')
-            steps = expand(item, slots)
+            if (set(slots) == {'speed'} and re.fullmatch(
+                    r'(?:请|以|按|用|保持|速度|限速|为|的|每秒|厘米|公分|毫米|米|秒|行驶|开车|行车|开|[\d.s/cm零〇一二两三四五六七八九十百点半])+', quote)):
+                steps = [{'do': 'speed'}]
+            else:
+                steps = row_steps(item, slots, [*prior, *result])
+            if not steps:
+                if diagnostics is not None:
+                    diagnostics.append(f'{quote} → 沿用上一阶段确认的作物行及其退回条件')
+                continue
             if ('seconds' in slots and steps[-1]['do'] not in ('unsupported', 'wait')
                     and re.search(r'停|待|歇|等|留', quote)):
                 steps.append({'do': 'wait', 'seconds': slots['seconds']})
@@ -349,16 +409,16 @@ def ground_objects(server, items):
             item['目标'] = '其他物体'
 
 
-def interpret_span(server, instruction, diagnostics):
+def interpret_span(server, instruction, diagnostics, prior=()):
     prompt = PROMPT
     schema = SCHEMA
     for attempt in range(2):
         try:
             answer = ask(server, prompt, instruction, schema, 1100)
-            compile_semantics(answer, instruction)  # Validate verbatim source coverage before asking about nouns.
+            compile_semantics(answer, instruction, prior=prior)
             trace = ['模型原答 ' + json.dumps(answer, ensure_ascii=False)]
             ground_objects(server, answer['动作序列'])
-            plan = compile_semantics(answer, instruction, trace)
+            plan = compile_semantics(answer, instruction, trace, prior)
         except ValueError as exc:
             if attempt:
                 raise
@@ -392,7 +452,7 @@ def interpret_online(server, instruction, diagnostics=None):
         steps = []
         for part in parts:
             try:
-                steps.extend(interpret_span(server, part, diagnostics))
+                steps.extend(interpret_span(server, part, diagnostics, steps))
             except ValueError as exc:
                 steps.append(_blocked(f'无法确认原话「{part}」：{exc}'))
                 break

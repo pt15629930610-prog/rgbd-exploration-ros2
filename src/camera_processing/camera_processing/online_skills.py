@@ -50,10 +50,13 @@ class LoopTrace:
     """A genuine circuit winds around the observed plant and returns to its own gate."""
 
     def __init__(self, gate, plant):
+        self.trail = [gate]
         self.gate, self.plant, self.last = gate, plant, gate
         self.angle = self.distance = 0.
 
     def observe(self, point):
+        if math.dist(self.trail[-1], point) >= .45:
+            self.trail.append(point)
         step = math.dist(self.last, point)
         if step > .65:
             raise Unmet('绕行时位姿不连续，无法核实闭环')
@@ -379,7 +382,7 @@ class MotionSkills:
                 return True
         return False
 
-    def loop(self):
+    def loop(self, patrol=False):
         f = self.need(('row',))
         if self.entered is not f or self.loop_trace is None:
             raise Unmet('需要先进入已确认的作物行，再开始绕行')
@@ -389,6 +392,7 @@ class MotionSkills:
         corner = f.point
         tracker = JunctionTracker()
         turns = 0
+        checked_at = None
         try:
             while not trace.closed():
                 if turns >= 3:
@@ -415,6 +419,22 @@ class MotionSkills:
                     yield from self.look(yaw)
                     continue
                 if not (yield from self.drive_path(self.view.advance(self.here, yaw, .72))):
+                    if patrol:
+                        refreshed = yield from self.probe(yaw, tracker, force=True)
+                        side_open = any(j.branches & {'left', 'right'} and
+                                        -.35 <= components(self.here, j.point, yaw)[0] <= 1.35
+                                        for j in refreshed)
+                        if not side_open and self.view.observed_dead_end(self.here, yaw):
+                            self.loop_trace = None
+                            self.note('补看前方和两侧后确认行末封堵，沿实测车迹退回本行入口')
+                            for point in reversed(trace.trail):
+                                yield from self.travel(point)
+                            self.entered = None
+                            self.note(f'已回到本行入口 {trace.gate}，完成死胡同巡检')
+                            return
+                        if checked_at is None or math.dist(self.here, checked_at) > .35:
+                            checked_at = self.here
+                            continue
                     raise Unmet('行间前方受阻，未形成闭环')
         except Unmet as exc:
             self.loop_trace = None
@@ -441,7 +461,9 @@ class MotionSkills:
 
     def run_skill(self, step, next_step):
         op = step['do']
-        if op == 'seek':
+        if op == 'speed':
+            self.command()
+        elif op == 'seek':
             self.feature = self.entered = self.loop_trace = None
             kind = step['target']
             if kind in ('crossroad', 'opening', 'row'):
@@ -473,8 +495,8 @@ class MotionSkills:
                 raise Unmet('尚未观测到路口的远端')
         elif op == 'enter':
             yield from self.enter()
-        elif op == 'loop':
-            yield from self.loop()
+        elif op in ('loop', 'patrol'):
+            yield from self.loop(patrol=op == 'patrol')
         elif op == 'exit':
             if self.feature is not None and self.feature.kind == 'door':
                 door = self.feature

@@ -11,6 +11,25 @@ def compile_items(text, *items):
 
 
 class LanguageTests(unittest.TestCase):
+    def test_explicit_distance_still_moves_and_strict_circuit_reuses_the_row(self):
+        q = '以0.3米/秒向前走一米'
+        self.assertEqual(compile_items(q, {'原文': q, '动作': '行驶'}),
+                         [{'do': 'advance', 'side': 'front', 'speed': .3, 'distance': 1.}])
+        a, b = '遇到第一条作物行', '进去绕一圈'
+        steps = compile_items(a+'，'+b, {'原文': a, '动作': '寻找'}, {'原文': b, '动作': '巡检'})
+        self.assertEqual([s['do'] for s in steps], ['seek', 'enter', 'loop'])
+
+    def test_logged_patrol_command(self):
+        pairs = [('以0.3米/秒的速度行驶', '行驶'), ('先左拐', '转向'),
+                 ('遇到第一条作物行就进去巡一趟', '进入'), ('走不通就退回来', '返回入口'),
+                 ('再从右门出去', '穿过')]
+        steps = compile_items('，'.join(q for q, _ in pairs), *[
+            {'原文': q, '动作': v} for q, v in pairs])
+        self.assertEqual(steps, [{'do': 'speed', 'speed': .3}, {'do': 'turn', 'side': 'left'},
+                                 {'do': 'seek', 'target': 'row', 'ordinal': 1}, {'do': 'enter'},
+                                 {'do': 'patrol'}, {'do': 'seek', 'target': 'door', 'side': 'right'},
+                                 {'do': 'exit'}])
+
     def test_omitted_trigger_or_ordinal_is_recovered_from_the_users_words(self):
         q = '遇到第二个十字路口左拐'
         self.assertEqual(compile_items(q, {'原文': q, '动作': '转向', '方位': '右'}), [

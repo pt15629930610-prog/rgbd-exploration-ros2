@@ -84,6 +84,15 @@ class RoadView:
         stops = np.flatnonzero(~safe)
         return float(samples[max(0, stops[0]-1)]) if stops.size else limit
 
+    def observed_dead_end(self, point, yaw):
+        """Require a measured cap across the chassis and banks on both sides."""
+        def bank(angle, limit, offsets):
+            distances = np.arange(.10, limit, self.resolution/2)
+            raw, _ = self._sample(point, angle, distances[:, None], np.array(offsets)[None, :])
+            return (raw >= 50).any(axis=0).all()
+        return (bank(yaw, 1.35, [-.25, 0., .25])
+                and all(bank(yaw+sign*math.pi/2, 1.95, [-.25, 0., .25]) for sign in (-1, 1)))
+
     def _profile(self, point, yaw, horizon, sign):
         # Examine both road shoulders, including a short stretch behind the robot.
         step = max(.07, self.resolution)
