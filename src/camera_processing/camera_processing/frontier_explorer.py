@@ -81,6 +81,7 @@ class FrontierExplorer(Node):
         rows, cols = np.where(grid >= 50)
         x = info.origin.position.x + (cols + 0.5) * info.resolution
         y = info.origin.position.y + (rows + 0.5) * info.resolution
+        self.local_obstacle_distance = float(np.hypot(x, y).min()) if rows.size else math.inf
         self.turn_blocked = bool(np.any(x*x + y*y < 0.42**2))
         self.forward_blocked = bool(np.any((x < 0.46) & (np.abs(y) < 0.30)))
         self.stamps['local'] = seconds(msg.header)

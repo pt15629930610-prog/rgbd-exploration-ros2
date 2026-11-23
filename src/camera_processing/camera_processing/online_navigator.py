@@ -1,9 +1,12 @@
 """ROS adapter for language-directed navigation on an initially unknown occupancy map."""
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 import json
 import math
 
+import cv2
+import numpy as np
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.signals import SignalHandlerOptions
@@ -12,6 +15,7 @@ from std_msgs.msg import String
 from .door_log_sync import windows_log_server
 from .door_run_log import DoorRunLog, RUN_LOG_DIRECTORY
 from .frontier_explorer import FrontierExplorer, seconds
+from .frontier_planner import obstacle_distance
 from .online_language import interpret_online
 from .online_roads import RoadView
 from .online_skills import MotionSkills, Unmet, crossed_threshold
@@ -31,6 +35,7 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
         self.feature = self.entered = self.loop_trace = self.portal = None
         self.vision_key = None
         self.responses = 0
+        self.clearance_hold = None
         self.last_image_log = -math.inf
         self.journal = None
         try:
@@ -90,6 +95,7 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
 
     def stop(self, *, keep_row=False):
         self.command()
+        self.clearance_hold = None
         self.clear_path()
         if self.pending is not None:
             self.pending.cancel()
@@ -167,9 +173,59 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
                 return
             if evidence.point is not None:
                 self.images.append(evidence)
+            elif evidence.panel is not None:
+                point, normal = evidence.panel
+                self.panels.append(replace(evidence, point=point, heading=normal, jpeg=b''))
             if evidence.point is not None or self.now-self.last_image_log > 3.:
-                self.note(f'帧 {evidence.stamp:.2f} {evidence.detail}', jpeg=evidence.jpeg)
+                self.note(f'帧 {evidence.stamp:.2f} 拍摄位姿 {evidence.pose} {evidence.detail}', jpeg=evidence.jpeg)
                 self.last_image_log = self.now
+
+    def clearance_image(self):
+        row, col = self.cell()
+        radius = math.ceil(2./self.resolution)
+        top, left = max(0, row-radius), max(0, col-radius)
+        cells = self.grid[top:row+radius+1, left:col+radius+1]
+        if not cells.size:
+            return None
+        # Row indices increase along +Y; flip for the same orientation as the global window.
+        grey = np.where(cells < 0, 105, np.where(cells >= 50, 15, 235)).astype(np.uint8)
+        scale = 4
+        image = cv2.resize(cv2.cvtColor(grey, cv2.COLOR_GRAY2BGR), None,
+                           fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
+        def pixel(cell):
+            return ((cell[1]-left)*scale+scale//2, (cell[0]-top)*scale+scale//2)
+        if len(self.path) >= 2:
+            cv2.polylines(image, [np.array([pixel(c) for c in self.path], np.int32)], False, (0,170,0), 2)
+        center = pixel((row,col))
+        cv2.circle(image, center, round(.42*scale/self.resolution), (0,0,235), 2)
+        cv2.circle(image, center, 3, (255,0,0), -1)
+        ok, encoded = cv2.imencode('.jpg', cv2.flip(image, 0))
+        return encoded.tobytes() if ok else None
+
+    def clearance_ready(self):
+        mapped = self.mapped_turn_obstacle()
+        if self.turn_blocked or mapped:
+            self.command()
+            detail = (f'位姿 {self.pose}；局部触发={self.turn_blocked}，'
+                      f'最近 {self.local_obstacle_distance:.2f} m；全局触发={mapped}，'
+                      f'最近格距约 {obstacle_distance(self.grid, self.cell(), self.resolution, 3.):.2f} m')
+            if self.clearance_hold is None:
+                self.clearance_hold = self.now
+                self.note('底盘净空保护制动，原地复测。'+detail+
+                          '。附全局 OCC 局部截图：蓝点车位，红圈净空，绿线当前路径，黑色障碍。',
+                          jpeg=self.clearance_image())
+                self.clear_path()
+            elif self.now-self.clearance_hold >= 3.:
+                raise Unmet('底盘净空持续不足。'+detail)
+            self.clearance_stamp = (self.stamps['local'], self.stamps['global'])
+            return False
+        if self.clearance_hold is not None:
+            if any(self.stamps[k] <= stamp for k, stamp in zip(('local','global'), self.clearance_stamp)):
+                self.command()
+                return False
+            self.clearance_hold = None
+            self.note('局部与全局地图已刷新，净空恢复，继续当前步骤')
+        return True
 
     def tick(self):
         if self.phase == 'idle':
@@ -197,8 +253,8 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
             self.report('Waiting for fresh RGB-D map and odometry.')
             return
         try:
-            if self.turn_blocked or self.mapped_turn_obstacle():
-                raise Unmet('底盘净空内有障碍')
+            if not self.clearance_ready():
+                return
             if self.now > self.deadline:
                 raise Unmet('该步骤在允许的仿真时间内仍未完成')
             if self.status == 'Waiting for fresh RGB-D map and odometry.':

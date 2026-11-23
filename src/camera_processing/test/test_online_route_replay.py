@@ -8,11 +8,14 @@ import numpy as np
 
 from camera_processing.online_roads import RoadView
 from camera_processing.online_skills import Feature, MotionSkills, crossed_threshold, wrap
+from camera_processing.frontier_planner import obstacle_distance
+from camera_processing.online_vision import depth_openings
 from test_greenhouse_route import ORIGIN, RESOLUTION, SimulatedRoute, cell
 
 
 class OnlineReplay(MotionSkills, SimulatedRoute):
     crop_point = (2., 1.56)
+    search_turn_slip = .008
     def __init__(self):
         super().__init__()
         self.course = self.entrance[2]
@@ -44,6 +47,7 @@ class OnlineReplay(MotionSkills, SimulatedRoute):
                                                    heading=-math.pi/2 if exit else None))
 
     def exercise(self, step, next_step=None):
+        self.vision_key = None  # Production stops the previous vision job between skills.
         self.camera()
         skill = self.run_skill(step, next_step)
         for i in range(2200):
@@ -53,7 +57,8 @@ class OnlineReplay(MotionSkills, SimulatedRoute):
                 return
             x,y,yaw = self.pose
             dt = .18
-            travel = dt*(self.linear+.008*abs(self.angular))
+            slip = self.search_turn_slip if self.vision_key and self.vision_key[0] == 'exit' else .008
+            travel = dt*(self.linear+slip*abs(self.angular))
             self.pose = (x+travel*math.cos(yaw), y+travel*math.sin(yaw), wrap(yaw+dt*self.angular))
             if self.portal and crossed_threshold(self.portal, (x, y), self.here):
                 self.crossed = True
@@ -67,9 +72,67 @@ class OnlineReplay(MotionSkills, SimulatedRoute):
         raise AssertionError(('timed out', self.pose, step, self.events))
 
 
+class DepthExitReplay(OnlineReplay):
+    """Require a two-jamb depth fit for exit observations; model class is a fixture."""
+
+    search_turn_slip = .08
+
+    def camera(self):
+        checking_exit = self.portal is not None or self.vision_key and self.vision_key[0] == 'exit'
+        if checking_exit and obstacle_distance(self.truth, self.cell(), RESOLUTION, .9) < .42:
+            raise AssertionError(('chassis clearance', self.pose))
+        if not self.vision_key or self.vision_key[0] != 'exit':
+            return super().camera()
+        self.see(self.now)
+        self.view = RoadView(self.grid, self.walk, ORIGIN, RESOLUTION)
+        if self.now-getattr(self, 'last_exposure', -10.) < 1.15:
+            return
+        self.last_exposure = self.now
+        self.responses += 1
+        x, y, yaw = self.pose
+        width = 200
+        fx = width*.5/math.tan(math.pi/6)
+        lateral = ((width*.5-np.arange(width))/fx)[:, None]
+        ranges = np.arange(.05, 5., .04)[None, :]
+        xx = x + ranges*(math.cos(yaw)-lateral*math.sin(yaw))
+        yy = y + ranges*(math.sin(yaw)+lateral*math.cos(yaw))
+        cols = np.floor((xx-ORIGIN[0])/RESOLUTION).astype(int).clip(0, self.grid.shape[1]-1)
+        rows = np.floor((yy-ORIGIN[1])/RESOLUTION).astype(int).clip(0, self.grid.shape[0]-1)
+        first_hit = np.where(self.truth[rows, cols] == 100, ranges, np.inf).min(axis=1)
+        depth = np.tile(first_hit, (96, 1))
+        for _, (point, heading) in depth_openings(depth, fx, width*.5, self.pose):
+            if math.dist(point, (0., -11.)) < .4:
+                self.images.append(SimpleNamespace(stamp=self.now, point=point, heading=heading, pose=self.pose))
+
+
 class OnlineRouteReplayTest(unittest.TestCase):
-    def test_first_row_patrol_returns_from_observed_dead_end_then_exits(self):
+    def test_tight_exit_turn_requires_an_observed_retreat(self):
         robot = OnlineReplay()
+        robot.pose = (0., 0., 0.)
+        robot.grid[:] = 0
+        robot.grid[:, cell((.65, 0.))[1]] = 100
+        robot.walk = robot.grid == 0
+        robot.view = RoadView(robot.grid, robot.walk, ORIGIN, RESOLUTION)
+        robot.vision_start('exit')
+        self.assertTrue(robot.tight_exit_turn(math.pi))
+        robot.approach_track.append((-.4, 0.))
+        robot.walk[cell((-.2, 0.))] = False
+        with self.assertRaises(StopIteration) as stopped:
+            next(robot.retreat_for_turn())
+        self.assertFalse(stopped.exception.value)
+        self.assertEqual(robot.linear, 0.)
+        robot.walk[cell((-.2, 0.))] = True
+        retreat = robot.retreat_for_turn()
+        next(retreat)
+        self.assertLess(robot.linear, 0.)
+        robot.pose = (-.37, 0., 0.)
+        with self.assertRaises(StopIteration) as finished:
+            next(retreat)
+        self.assertTrue(finished.exception.value)
+        self.assertEqual(robot.linear, 0.)
+
+    def test_first_row_patrol_returns_from_observed_dead_end_then_exits(self):
+        robot = DepthExitReplay()
         robot.speed_limit = .3
         robot.crop_point = (-3.8, 1.9)
         robot.exercise({'do': 'turn', 'side': 'left'})

@@ -1,8 +1,10 @@
 """Road observations on a growing occupancy grid. All positions are in odom metres."""
 
 from dataclasses import dataclass
+from functools import cached_property
 import math
 
+import cv2
 import numpy as np
 
 from .aisle_tracking import observed_path
@@ -190,7 +192,16 @@ class RoadView:
     def path_to(self, point, goal):
         return astar(self.walk, self.cell(point), self.cell(goal))
 
-    def frontier_path(self, point, direction=None, visited=(), target=None):
+    @cached_property
+    def clearance_map(self):
+        free = np.pad(self.grid < 50, 1).astype(np.uint8)
+        return cv2.distanceTransform(free, cv2.DIST_L2, cv2.DIST_MASK_PRECISE)[1:-1, 1:-1]*self.resolution
+
+    @cached_property
+    def turning_room(self):
+        return self.walk & (self.clearance_map >= .78)
+
+    def frontier_path(self, point, direction=None, visited=(), target=None, *, room_to_turn=False):
         """Rank reachable frontier groups by proximity, direction and optional observed target."""
         start = self.cell(point)
         if not inside(self.walk, start) or not self.walk[start]:
@@ -224,11 +235,18 @@ class RoadView:
                     continue
                 score = distance
                 if direction is not None:
-                    alignment = (dx*math.cos(direction)+dy*math.sin(direction))/distance
+                    progress = dx*math.cos(direction)+dy*math.sin(direction)
+                    alignment = progress/distance
                     score += 3.5*(1-alignment)
+                    if room_to_turn:
+                        # A nearby frontier behind the robot should not repeatedly
+                        # outrank a reachable frontier farther into the requested side.
+                        score -= 1.35*progress
                 if target is not None:
                     score += 1.6*math.dist((x, y), target)
+                if room_to_turn:
+                    score += 12.*max(0., .85-self.clearance_map[cell])
                 candidates.append((score, cell))
         if not candidates:
             return []
-        return astar(self.walk, start, min(candidates)[1])
+        return astar(self.walk, start, min(candidates)[1], roomy=self.turning_room if room_to_turn else None)

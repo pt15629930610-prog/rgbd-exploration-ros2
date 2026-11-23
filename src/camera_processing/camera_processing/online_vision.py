@@ -22,6 +22,7 @@ class Evidence:
     detail: str
     jpeg: bytes
     error: bool = False
+    panel: tuple | None = None  # Observation hint only; never a verified exit.
 
 
 def world_point(u, z, fx, cx, pose):
@@ -130,6 +131,25 @@ def locate_opening(box, depth, fx, cx, pose):
     return center, math.atan2(math.sin(normal), math.cos(normal))
 
 
+def depth_openings(depth, fx, cx, pose):
+    """Propose complete near/far/near openings around camera height, before querying RGB."""
+    h, w = depth.shape
+    rows = np.linspace(.39*h, .59*h, 9).astype(int)
+    lag = max(2, round(w*.012))
+    a, b = depth[rows, :-2*lag], depth[rows, 2*lag:]
+    def edges(near, far):
+        mask = ((near > .1) & (near < 4.99) & (far > near+.65)).sum(axis=0) >= 6
+        changes = np.flatnonzero(np.diff(np.r_[False, mask, False]))
+        return [lag+(lo+hi-1)//2 for lo, hi in zip(changes[::2], changes[1::2])]
+    lefts, rights = edges(a, b), edges(b, a)
+    boxes = [(l, int(.20*h), r, int(.84*h)) for l in lefts for r in rights if r-l >= 14
+             and not any(l < edge < r for edge in lefts+rights)]
+    for box in sorted(boxes, key=lambda box: abs((box[0]+box[2])/2-cx)):
+        gate = locate_opening(box, depth, fx, cx, pose)
+        if gate is not None:
+            yield box, gate
+
+
 def analyze_frame(server, kind, label, stamp, pose, rgb, depth, fx, cx):
     from .door_navigator import candidate_crop
     from .door_snapshot import query_image
@@ -151,12 +171,35 @@ def analyze_frame(server, kind, label, stamp, pose, rgb, depth, fx, cx):
             prompt += '观察对象是' + json.dumps(label, ensure_ascii=False)
         result.detail = '现场观察：' + query_image(server, jpeg, 'jpeg', prompt).strip()
         return result
+    h, w = depth.shape
+    rejected_gaps = []
+    if kind == 'exit':
+        # A panel box at the edge of the RGB image can miss the free gap completely.
+        # Verify the actual gap in context, including the jambs and nearby door leaves.
+        for index, (box, gate) in enumerate(depth_openings(depth, fx, cx, pose)):
+            if index >= 2:
+                break
+            l, t, r, b = box
+            margin = (r-l)*.42
+            context = (max(0,l-margin)*1000/w, 0, min(w,r+margin)*1000/w, 1000)
+            crop = candidate_crop(rgb, context)
+            if crop is None:
+                continue
+            subject = ('门扇为'+label+'的') if label else ''
+            prompt = ('判断画面中间通路的用途。若能看到建筑门框或移开的门扇，并有向外的开口，回答'
+                      '「'+subject+'打开的门洞」。作物通道、两件家具之间的空隙、实墙或关着的门回答「其他」。')
+            answer = query_image(server, crop, 'jpeg', prompt).strip(' \r\n。！“”「」')
+            result.detail = f'深度门洞候选像素 {l}～{r}，RGB 复核 {answer[:80]}'
+            if answer == subject+'打开的门洞':
+                result.point, result.heading = gate
+                return result
+            rejected_gaps.append(gate[0])
     target = names[kind]
     if label:
         target += '，指定外观或名称为' + json.dumps(label, ensure_ascii=False)
     query = f'找出画面中最清楚的{target}。只输出一个 bbox_2d，坐标为 0 至 1000 的 JSON；看不见就输出 []。'
     raw = query_image(server, jpeg, 'jpeg', query)
-    result.detail = f'{kind} 定位回答 {raw[:240]}'
+    result.detail += f' {kind} 定位回答 {raw[:240]}'
     try:
         box = door_box(raw)
     except (TypeError, ValueError):
@@ -178,13 +221,14 @@ def analyze_frame(server, kind, label, stamp, pose, rgb, depth, fx, cx):
     prompt = f'图像中心的主体更像什么？在「{wanted}、{alternatives}」中选一个。只输出类别名称。'
     classification = query_image(server, crop, 'jpeg', prompt).strip(' \r\n。！“”「」')
     result.detail += f'；局部复核 {classification[:100]}'
+    px = tuple(min(limit-1, round(value*limit/1000)) for value, limit in zip(box, (w, h, w, h)))
+    if kind == 'exit' and classification in (wanted, '关闭的门', '房门', '门板'):
+        result.panel = locate_door_face(px, depth, fx, cx, pose)
     if classification != wanted:
         return result
-    h, w = depth.shape
-    px = tuple(min(limit-1, round(value*limit/1000)) for value, limit in zip(box, (w, h, w, h)))
     if kind == 'exit':
         gate = locate_opening(px, depth, fx, cx, pose)
-        if gate is not None:
+        if gate is not None and all(math.dist(gate[0], p) > .55 for p in rejected_gaps):
             result.point, result.heading = gate
     elif kind == 'door':
         face = locate_door_face(px, depth, fx, cx, pose)

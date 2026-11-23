@@ -4,7 +4,7 @@ from collections import deque
 from dataclasses import dataclass
 import math
 
-from .frontier_planner import clear_segment, inside
+from .frontier_planner import astar, clear_segment, inside, observation_path
 from .online_roads import JunctionTracker
 
 
@@ -87,6 +87,36 @@ class MotionSkills:
         if self.path:
             self.set_path([])
 
+    def tight_exit_turn(self, error):
+        if not self.vision_key or self.vision_key[0] != 'exit' or abs(error) < .5:
+            return False
+        margin = .46 + .10*min(math.pi, abs(error))
+        return self.view.clearance_map[self.cell()] < margin
+
+    def retreat_for_turn(self):
+        """Back up only over a straight, observed approach with a clear inflated footprint."""
+        self.command()
+        self.clear_path()
+        start = self.cell()
+        for point in reversed(self.approach_track):
+            distance, lateral = components(self.here, point, self.pose[2])
+            cell = self.view.cell(point)
+            if (-.85 <= distance <= -.15 and abs(lateral) < .12*(-distance)
+                    and inside(self.walk, cell) and self.view.turning_room[cell]
+                    and clear_segment(self.walk, start, cell)):
+                self.note('找门转向余量不足，沿刚驶过的通路退到宽处')
+                begin = self.now
+                while math.dist(self.here, point) > .08:
+                    error = wrap(bearing(self.here, point)+math.pi-self.pose[2])
+                    if (self.now-begin > 15. or abs(error) > .24
+                            or not clear_segment(self.walk, self.cell(), cell)):
+                        break
+                    self.command(-min(.09, self.speed_limit), .5*error)
+                    yield
+                self.command()
+                return self.view.clearance_map[self.cell()] >= .70
+        return False
+
     def aim(self, yaw):
         self.clear_path()
         start = self.now
@@ -94,6 +124,11 @@ class MotionSkills:
             if self.now-start > 22.:
                 raise Unmet('转向未达到要求的朝向')
             error = wrap(yaw-self.pose[2])
+            if self.tight_exit_turn(error):
+                if not (yield from self.retreat_for_turn()):
+                    raise Unmet('找门时转向余量不足，缺少可复核的后退通路')
+                start = self.now
+                continue
             self.command(angular=max(-.46, min(.46, 1.45*error)))
             yield
         self.command()
@@ -120,6 +155,9 @@ class MotionSkills:
             if self.now-last_progress > 16.:
                 break
             start = self.cell()
+            exit_search = self.vision_key is not None and self.vision_key[0] == 'exit'
+            if exit_search and math.dist(self.here, self.approach_track[-1]) >= .065:
+                self.approach_track.append(self.here)
             targets = []
             for i in range(max(0, index-4), min(len(path), index+24)):
                 p = self.xy(path[i])
@@ -127,19 +165,28 @@ class MotionSkills:
                     targets.append((i, p))
             if not targets:
                 break
+            if exit_search and self.view.turning_room[start]:
+                roomy = [t for t in targets if clear_segment(self.view.turning_room, start, path[t[0]])]
+                targets = roomy or targets[:1]
             i, point = targets[-1]
             dist = math.dist(self.here, goal)
             if i > index or dist < best-.05:
                 last_progress, best = self.now, dist
             index = max(i, index)
             error = wrap(bearing(self.here, point)-self.pose[2])
+            if self.tight_exit_turn(error):
+                yield from self.retreat_for_turn()
+                break  # The old waypoint no longer describes the approach.
             angular = max(-.46, min(.46, 1.55*error))
             if abs(error) > .15:
                 self.command(angular=angular)
             elif self.forward_blocked:
                 break
             else:
-                self.command(min(self.speed_limit, .62*dist), angular)
+                cap = self.speed_limit
+                if exit_search and self.view.clearance_map[start] < .85:
+                    cap = min(cap, .12)
+                self.command(min(cap, .62*dist), angular)
             yield
         self.command()
         self.clear_path()
@@ -199,16 +246,21 @@ class MotionSkills:
         self.vision.reset()
         self.vision_key = kind, label
         self.images = deque(maxlen=16)
+        self.panels = deque(maxlen=12)
+        if kind == 'exit':
+            self.approach_track = deque([self.here], maxlen=32)
         self.snapshot = None
         self.vision_errors = 0
 
-    def match(self, accepts):
+    def match(self, accepts, images=None, outward=None):
         # Two frames of the same target must agree in world coordinates.
-        for i in reversed(range(1, len(self.images))):
-            e = self.images[i]
-            if not accepts(e.point):
+        images = self.images if images is None else images
+        for i in reversed(range(1, len(images))):
+            e = images[i]
+            if (self.now-e.stamp > 12. or not accepts(e.point)
+                    or outward is not None and (e.heading is None or math.cos(e.heading-outward) < .5)):
                 continue
-            for old in list(self.images)[:i]:
+            for old in list(images)[:i]:
                 if (old.stamp < e.stamp and e.stamp-old.stamp < 12. and accepts(old.point)
                         and math.dist(old.point, e.point) < .55
                         and (e.heading is None or old.heading is not None
@@ -311,6 +363,42 @@ class MotionSkills:
                     continue
             raise Unmet('沿途没有再观测到可达的指定路口')
 
+    def inspect_panel(self, panel, verified):
+        """Look beside a measured door leaf from reachable, front-facing viewpoints."""
+        normal = panel.heading
+        if self.view.turning_room[self.cell()]:
+            yield from self.look(bearing(self.here, panel.point))
+            start, responses = self.now, self.responses
+            while self.now-start < 8. and self.responses-responses < 2 and not verified():
+                yield
+            if verified():
+                return
+        views = []
+        for gap in (-1.25, 0., 1.25):
+            aim = offset(panel.point, normal+math.pi/2, gap)
+            for standoff in (2.6, 2.1, 3.1):
+                point = offset(aim, normal, -standoff)
+                cell = self.view.cell(point)
+                if not inside(self.walk, cell) or not self.view.turning_room[cell]:
+                    continue
+                path = astar(self.walk, self.cell(), cell, roomy=self.view.turning_room)
+                if path:
+                    views.append((len(path), point, aim))
+                    break
+        for _, point, aim in sorted(views):
+            path = astar(self.walk, self.cell(), self.view.cell(point), roomy=self.view.turning_room)
+            if not (yield from self.drive_path(path, stop=verified)):
+                continue
+            if verified():
+                return
+            yield from self.look(bearing(self.here, aim))
+            start, responses = self.now, self.responses
+            while self.now-start < 12. and self.responses-responses < 4 and not verified():
+                self.command()
+                yield
+            if verified():
+                return
+
     def seek_visual(self, step, kind):
         self.vision_start(kind, step.get('label', ''))
         side = step.get('side')
@@ -322,14 +410,40 @@ class MotionSkills:
         counted = []
         visited = []
         failed_looks = 0
+        inspected = []
+        settled = []
+        looked_from = []
 
         def accepts(p):
             in_sector = direction is None or (math.dist(self.entrance[:2], p) > .45 and
                 abs(wrap(bearing(self.entrance, p)-direction)) < math.radians(55))
             return in_sector and self.in_region(p, region) and all(math.dist(p, q) > .9 for q in counted)
 
+        def verified():
+            return self.match(accepts, outward=direction if kind == 'exit' else None)
+
+        def pending_gate():
+            if kind != 'exit' or not self.images:
+                return None
+            cue = self.images[-1]
+            if (self.now-cue.stamp > 3. or not accepts(cue.point)
+                    or direction is not None and math.cos(cue.heading-direction) < .5):
+                return None
+            if any(self.now-t < 10. and math.dist(cue.point, p) < .8 for t, p in settled):
+                return None
+            return cue
+
+        def new_panel(p):
+            return accepts(p) and all(math.dist(p, q) > 1.1 or math.dist(self.here, observer) > 2.5
+                                      for q, observer in inspected)
+
+        def panel_hint():
+            if kind == 'exit':
+                return self.match(new_panel, self.panels, outward=direction)
+            return None
+
         while True:
-            m = self.match(accepts)
+            m = verified()
             if m:
                 counted.append(m.point)
                 if len(counted) >= step.get('ordinal', 1):
@@ -337,11 +451,38 @@ class MotionSkills:
                                            else bearing(m.pose, m.point))
                     self.note(f'两帧 RGB-D 核实 {kind}，位置 {m.point}')
                     return
-            path = self.view.frontier_path(self.here, direction=direction, visited=visited)
+            cue = pending_gate()
+            if cue:
+                self.command()
+                self.clear_path()
+                settled.append((self.now, cue.point))
+                self.note(f'门洞首帧通过，停车等待第二帧确认 {cue.point}')
+                start, responses = self.now, self.responses
+                while self.now-start < 8. and self.responses-responses < 4 and not verified():
+                    yield
+                continue
+            panel = panel_hint()
+            if panel:
+                inspected.append((panel.point, self.here))
+                self.note(f'发现候选门板 {panel.point}，寻找能看到两侧门框的安全观察点')
+                yield from self.inspect_panel(panel, lambda: verified() or pending_gate())
+                continue
+            if (kind == 'exit' and direction is not None and self.view.turning_room[self.cell()]
+                    and all(math.dist(self.here, p) > 2.2 for p in looked_from)):
+                looked_from.append(self.here)
+                yield from self.look(direction)
+                start, responses = self.now, self.responses
+                while self.now-start < 6. and self.responses == responses and not pending_gate():
+                    yield
+                continue
+            path = self.view.frontier_path(self.here, direction=direction, visited=visited,
+                                           room_to_turn=kind == 'exit')
             if path and len(path) > 3:
                 end = self.xy(path[-1])
+                if kind == 'exit':
+                    path = observation_path(path, self.grid, self.resolution)
                 prefix = path[:max(4, round(1.15/self.resolution))]
-                progress = yield from self.drive_path(prefix, stop=lambda: self.match(accepts) is not None)
+                progress = yield from self.drive_path(prefix, stop=lambda: verified() or pending_gate() or panel_hint())
                 if math.dist(self.here, end) < .45 or not progress:
                     visited.append(end)
                 if progress:
@@ -353,7 +494,7 @@ class MotionSkills:
                 raise Unmet('可观测范围内尚未找到符合约束的目标')
             yield from self.look(yaw+(0., math.pi/2, -math.pi/2, math.pi)[failed_looks])
             start, n = self.now, self.responses
-            while self.now-start < 8. and self.responses-n < 2 and not self.match(accepts):
+            while self.now-start < 8. and self.responses-n < 2 and not verified() and not panel_hint():
                 yield
             failed_looks += 1
 
