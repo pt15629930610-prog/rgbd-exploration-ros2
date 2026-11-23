@@ -33,6 +33,8 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
         self.phase = 'idle'
         self.program = self.pending = self.entrance = None
         self.feature = self.entered = self.loop_trace = self.portal = None
+        self.last_row = None
+        self.row_laps = 0
         self.vision_key = None
         self.responses = 0
         self.clearance_hold = None
@@ -71,7 +73,7 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
         previous = self.pose
         if stamp < self.stamps['odom']-.5:
             self.stop()
-            self.entrance = self.feature = None
+            self.entrance = self.feature = self.last_row = None
             self.entered = self.loop_trace = None
             self.stamps['local'] = self.stamps['global'] = -math.inf
             previous = None
@@ -85,7 +87,7 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
         self.vision.pose(stamp, self.pose)
         if previous is not None and math.dist(previous[:2], self.here) > .65:
             self.stop()
-            self.feature = None
+            self.feature = self.last_row = None
             self.note('位姿出现跳变，任务已停止，先核对定位', 'Stopped: odometry jumped.')
             return
         if self.portal and previous is not None and crossed_threshold(self.portal, previous, self.here):
@@ -131,7 +133,7 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
         for i, step in enumerate(steps):
             self.step_index = i
             self.started = self.now
-            self.deadline = self.now + max(720., step.get('seconds', 0.)+30.)
+            self.deadline = self.now + max(720.*step.get('count', 1), step.get('seconds', 0.)+30.)
             self.vision_key = None
             self.vision.reset()
             self.clear_path()

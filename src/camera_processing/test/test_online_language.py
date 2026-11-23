@@ -11,6 +11,23 @@ def compile_items(text, *items):
 
 
 class LanguageTests(unittest.TestCase):
+    def test_patrol_limits_and_reference(self):
+        self.assertEqual(measurements('每秒一米，五十米'), {'speed': 1., 'distance': 50.})
+        for text in ('每秒1.01米', '五十一米'):
+            with self.assertRaises(ValueError):
+                measurements(text)
+        for q, expected in [
+            ('这行一共巡三趟', [{'do':'resume_row'}, {'do':'patrol', 'count':3, 'total':True}]),
+            ('这条行再巡两圈', [{'do':'resume_row'}, {'do':'patrol', 'count':2}]),
+            ('去右边隔壁的作物行巡一趟', [{'do':'neighbor','side':'right'}, {'do':'enter'}, {'do':'patrol'}]),
+        ]:
+            self.assertEqual(compile_items(q, {'原文':q, '动作':'巡检', '目标':'作物行'}), expected)
+        q = '离第一个十字口还有五米就停'
+        self.assertEqual(compile_items(q, {'原文':q, '动作':'靠近'})[-1],
+                         {'do':'landmark_stop','distance':5.})
+        q = '去第一条作物行巡检绕两圈'
+        self.assertEqual(compile_items(q, {'原文':q, '动作':'巡检'})[-1], {'do':'patrol','count':2})
+
     def test_explicit_distance_still_moves_and_strict_circuit_reuses_the_row(self):
         q = '以0.3米/秒向前走一米'
         self.assertEqual(compile_items(q, {'原文': q, '动作': '行驶'}),

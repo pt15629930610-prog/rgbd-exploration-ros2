@@ -159,6 +159,22 @@ class OnlineRouteReplayTest(unittest.TestCase):
                 robot.exercise({'do': 'seek', 'target': 'crossroad'})
                 self.assertLess(math.dist(robot.here, (at, 0.)), .35)
 
+    def test_resumed_patrol_counts_only_finished_trips(self):
+        robot = OnlineReplay()
+        robot.speed_limit = .3
+        robot.crop_point = (-3.8, 1.9)
+        robot.exercise({'do':'turn','side':'left'})
+        robot.exercise({'do':'seek','target':'row','ordinal':1})
+        robot.exercise({'do':'enter'})
+        robot.exercise({'do':'patrol'})
+        robot.feature = None
+        robot.exercise({'do':'resume_row'})
+        robot.exercise({'do':'patrol','count':2,'total':True})
+        self.assertEqual(robot.row_laps, 2)
+        self.assertLess(math.dist(robot.here, robot.last_row.point), .3)
+        robot.exercise({'do':'patrol','count':2,'total':True})
+        self.assertEqual(robot.row_laps, 2)
+
     def test_immediate_left_turn_at_entrance(self):
         robot = OnlineReplay()
         robot.exercise({'do': 'turn', 'side': 'left'})

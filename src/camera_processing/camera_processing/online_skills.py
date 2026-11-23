@@ -35,6 +35,7 @@ class Feature:
     point: tuple
     heading: float
     crop: tuple | None = None
+    approach_yaw: float | None = None
 
 
 def crossed_threshold(portal, previous, current):
@@ -318,6 +319,8 @@ class MotionSkills:
                 else:
                     directions = list(self.branches(j, yaw, None if area else side))
                     directions = [angle for angle in directions if self.in_region(offset(j.point, angle, 1.3), region)]
+                    if 'parallel_to' in step:
+                        directions = [a for a in directions if math.cos(a-step['parallel_to']) > .8]
                     if not directions:
                         continue
                     angle = directions[0]
@@ -347,7 +350,7 @@ class MotionSkills:
                 self.note(f'现场确认 {target} 第 {len(counted)} 处，位于 {j.point}')
                 if len(counted) == ordinal:
                     yield from self.travel(j.point)
-                    self.feature = Feature(target, j.point, angle, crop)
+                    self.feature = Feature(target, j.point, angle, crop, approach_yaw=yaw)
                     return
             yield from self.aim(yaw)
             path = self.view.advance(self.here, yaw, .72)
@@ -514,6 +517,9 @@ class MotionSkills:
         yield from self.travel(offset(f.point, f.heading, .9), straight=True)
         if f.kind == 'row':
             self.entered = f
+            if getattr(self, 'last_row', None) is not f:
+                self.last_row = f
+                self.row_laps = 0
 
     def shoulder_seen(self, yaw):
         # Unknown or out-of-map cells cannot establish that the junction ended.
@@ -613,6 +619,19 @@ class MotionSkills:
                 if kind == 'door' and next_step == 'exit':
                     kind = 'exit'
                 yield from self.seek_visual(step, kind)
+        elif op in ('resume_row', 'neighbor'):
+            previous = getattr(self, 'last_row', None)
+            if previous is None:
+                raise Unmet('尚无已进入的作物行可作为参照，请先指定一条作物行')
+            if op == 'resume_row':
+                self.feature = previous
+            else:
+                yaw = self.direction(step['side'])
+                if abs(math.cos(yaw-previous.heading)) > .5:
+                    raise Unmet('指定的入口方位沿着原行，无法在这一侧确认平行的相邻行')
+                yield from self.travel(previous.point)
+                self.course = yaw
+                yield from self.seek_junction({'target': 'row', 'parallel_to': previous.heading})
         elif op == 'turn':
             self.course = self.direction(step['side'])
             yield from self.aim(self.course)
@@ -636,8 +655,19 @@ class MotionSkills:
                 raise Unmet('尚未观测到路口的远端')
         elif op == 'enter':
             yield from self.enter()
-        elif op in ('loop', 'patrol'):
-            yield from self.loop(patrol=op == 'patrol')
+        elif op == 'loop':
+            yield from self.loop()
+        elif op == 'patrol':
+            row = self.need(('row',))
+            count = step.get('count', 1)
+            if step.get('total'):
+                count = max(0, count-getattr(self, 'row_laps', 0))
+            for _ in range(count):
+                if self.entered is not row:
+                    yield from self.enter()
+                yield from self.loop(patrol=True)
+                self.row_laps = getattr(self, 'row_laps', 0)+1
+                self.note(f'本行已完成 {self.row_laps} 趟巡检')
         elif op == 'exit':
             if self.feature is not None and self.feature.kind == 'door':
                 door = self.feature
@@ -653,12 +683,33 @@ class MotionSkills:
                     yield
                 self.vision_key = None
             yield from self.exit_door()
+        elif op == 'landmark_stop':
+            f = self.need(('row', 'opening', 'crossroad'))
+            yaw = f.approach_yaw if f.approach_yaw is not None else self.course
+            point = offset(f.point, yaw, -step['distance'])
+            if not inside(self.grid, self.view.cell(point)):
+                raise Unmet('指定的停车点在当前地图边界外')
+            yield from self.travel(point, explore=True)
+            yield from self.aim(yaw)
+            gap, lateral = components(self.here, f.point, yaw)
+            if abs(gap-step['distance']) > .22 or abs(lateral) > .25:
+                raise Unmet('与实测路口的停车距离仍有偏差')
+            self.note(f'相对已观测路口停车，纵向 {gap:.2f} m，横向偏差 {lateral:.2f} m')
         elif op == 'approach':
             f = self.need(('door', 'exit', 'crop', 'object'))
             distance = step.get('distance', 1.)
             for _ in range(2):
-                yield from self.travel(offset(f.point, f.heading, -distance), explore=True)
+                point = offset(f.point, f.heading, -distance)
+                if not inside(self.grid, self.view.cell(point)):
+                    raise Unmet('指定的停车点在当前地图边界外')
+                yield from self.travel(point, explore=True)
                 yield from self.look(bearing(self.here, f.point))
+                if distance >= 4.5:
+                    gap, lateral = components(self.here, f.point, f.heading)
+                    if abs(gap-distance) > .22 or abs(lateral) > .25:
+                        raise Unmet('相对先前实测目标的位置仍未满足停车距离')
+                    self.note(f'远距停车，依据已确认目标与里程计复核 {gap:.2f} m，横向 {lateral:.2f} m')
+                    return
                 self.vision_start(f.kind, step.get('label', ''))
                 start = self.now
                 while self.now-start < 22.:

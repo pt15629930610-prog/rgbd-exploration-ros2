@@ -2,13 +2,14 @@
 
 import json
 import math
+import os
 import re
 from urllib.request import ProxyHandler, Request, build_opener
 
 from .route_language import MODEL
 
 
-VERBS = ['转向', '寻找', '靠近', '进入', '绕行', '巡检', '穿过', '返回入口', '等待', '行驶', '观察', '拍照', '未支持']
+VERBS = ['转向', '寻找', '靠近', '进入', '绕行', '巡检', '穿过', '返回入口', '等待', '行驶', '观察', '拍照', '调速', '遇阻退回', '询问', '未支持']
 TARGETS = {'十字路口': 'crossroad', '通道开口': 'opening', '作物行': 'row',
            '门': 'door', '作物': 'crop', '其他物体': 'object'}
 SIDES = {'左': 'left', '右': 'right', '前': 'front', '后': 'back'}
@@ -26,6 +27,7 @@ PROMPT = """你是温室小车的中文语义解析器。理解整段原话，�
 单说左拐立即转。若指定在十字路口左拐，转向需目标十字路口。只有要求已经通过该路口再转，才加转弯时机。
 绕一圈包括找到作物行、进去、绕回行口，用一个绕行动作表达。遇到第一条可走的岔道进去用进入。
 沿一条作物行巡看、走到尽头折返选巡检。要求绕完整一圈选绕行。“走不通就退回来”指退回本行口。
+单独的速度约束选调速。巡检中遇到封堵退回本行口选遇阻退回。追加次数要保留在原文。未给次数的“多几圈”或未指定哪侧的“隔壁”选询问。
 “接着前面遇到”表示沿当前行进方向继续观察，不是向入口正前方转向。
 拍照保存现场图，观察描述现场可见情况。禁止、未实现的条件分支、病害诊断、采摘、无从确定的动作选未支持。不能删除条件后执行动作。
 例如“往左转，歇两秒再回起点”输出 {"动作序列":[{"原文":"往左转","动作":"转向","方位":"左"},{"原文":"歇两秒","动作":"等待"},{"原文":"再回起点","动作":"返回入口"}]}。
@@ -50,7 +52,8 @@ NUMBER = r'(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十百]+(?:点[
 SIDE_WORDS = {'left': r'左', 'right': r'右', 'front': r'对面|对侧|正前|[左右往向朝]前|前门|前头|前(?:方|面)(?=的|那|这|有没)',
               'back': r'身后|后门|[左右往向朝]后|后(?:方|面)的'}
 CONDITION = re.compile(r'除非|如果|要是|否则|不然|倘若|假如|(?:若|一旦).+|只有.+才|'
-                       r'(?<!没)有[^，。]{1,14}就|没有就|没找到就|不要|(?<!能)不能|禁止|不得|不许|不准|别(?:再|去|往|转|拐|进|穿|出|动)')
+                       r'(?<!没)有(?!'+NUMBER+r'\s*(?:厘米|毫米|米|cm|mm|m)(?:时)?就停)[^，。]{1,14}就|'
+                       r'没有就|没找到就|不要|(?<!能)不能|禁止|不得|不许|不准|别(?:再|去|往|转|拐|进|穿|出|动)')
 LANDMARKS = {'crossroad': r'十字|四岔|四向交叉', 'row': r'作物行|种植行|行间|种植槽|种植床|排作物|排种植|第\s*'+NUMBER+r'\s*(?:排|行)',
              'opening': r'开口|岔口|岔路|支路|丁字|路口|交叉口|道路|过道|小路|走道|通道', 'door': r'门|出口|出棚',
              'crop': r'作物|植株|植物|盆栽|草莓|生菜|香草|番茄|黄瓜'}
@@ -90,14 +93,14 @@ def measurements(quote):
     scales = {'厘米': .01, '公分': .01, 'cm': .01, '毫米': .001, 'mm': .001}
     num = '(' + NUMBER + ')'
     def save_speed(m):
-        value = bounded(quantity(m[1])*scales.get(m[2], 1.), .05, .30, '速度（米/秒）')
+        value = bounded(quantity(m[1])*scales.get(m[2], 1.), .05, 1., '速度（米/秒）')
         if 'speed' in result and result['speed'] != value:
             raise ValueError('同一步包含多个速度')
         result['speed'] = value
         return ' '
     phrase = re.sub(num+r'\s*'+length+r'\s*(?:/\s*(?:秒|s)|每秒)', save_speed, quote)
     phrase = re.sub(r'每秒\s*'+num+r'\s*'+length, save_speed, phrase)
-    groups = [('distance', num+r'\s*'+length, scales, .05, 30, '距离（米）'),
+    groups = [('distance', num+r'\s*'+length, scales, .05, 50, '距离（米）'),
               ('seconds', num+r'\s*(分钟|秒钟|秒)', {'分钟': 60}, .1, 3600, '等待时长（秒）')]
     for key, pattern, factors, low, high, name in groups:
         matches = list(re.finditer(pattern, phrase))
@@ -249,7 +252,7 @@ def expand(item, slots):
     if verb == '靠近':
         if target in ('crossroad', 'opening', 'row'):
             if 'distance' in slots:
-                raise ValueError('无法核实与路口的停车距离')
+                return [seek, {'do': 'landmark_stop', 'distance': slots['distance']}]
             return [seek]  # The junction finder already reaches its measured centre.
         approach = {'do': 'approach'}
         if 'label' in seek:
@@ -264,12 +267,19 @@ def expand(item, slots):
     raise ValueError('当前无法验证此动作的完成条件')
 
 
-ROW_RETURN = re.compile(r'(?:如果|要是|若|如果发现)?(?:走不通|前方不通|遇到封堵|遇到死胡同|前方被堵)(?:时|了)?(?:就|则)?(?:沿原路|原路)?(?:退回|返回|回到|退到)(?:来|去|作物行入口|行口|该行入口)')
+ROW_RETURN = re.compile(r'(?:如果|要是|若|如果发现)?(?:走不通|前方不通|遇到封堵|遇到死胡同|前方被堵)(?:时|了)?(?:就|则)?(?:沿原路|原路)?(?:退回|返回|回到|退到)(?:来|去|作物行入口|本行行口|行口|该行入口)')
 PATROL = re.compile(r'巡(?:检|查|视|一趟|一遍)|沿(?:这|该)行看看')
 
 
 def row_steps(item, slots, previous):
     quote = item['原文']
+    neighbor = re.search(r'隔壁|相邻|紧挨着', quote)
+    if re.search(r'几(?:圈|遍|次|趟)', quote):
+        return [_blocked('请指定巡检次数，例如“这条行再巡两趟”')]
+    if neighbor and not re.search(r'[左右]', quote):
+        return [_blocked('请指定上次行口左侧还是右侧的相邻作物行')]
+    if item['动作'] == '询问':
+        return [_blocked('请补充目标或次数：'+quote)]
     retreat = ROW_RETURN.search(quote)
     if retreat:
         if retreat.end() != len(quote):
@@ -290,9 +300,12 @@ def row_steps(item, slots, previous):
         context.pop()
     known_row = bool(context and context[-1].get('target') == 'row')
     named_row = bool(re.search(LANDMARKS['row'], quote))
-    circuit = re.search(r'圈|闭环|一周', quote)
-    patrol = (PATROL.search(quote) or item['动作'] == '巡检') and (known_row or named_row) and not circuit
-    if circuit and known_row and not named_row and item['动作'] == '巡检':
+    circuit = re.search(r'绕|闭环|一周', quote)
+    reuse = re.search(r'这条行|这行|同一行|刚才那条行|原来的行|加巡', quote)
+    requires_circuit = circuit and ('巡' not in quote or re.search(r'闭环|必须绕|务必绕', quote))
+    patrol = (PATROL.search(quote) or '巡' in quote or item['动作'] == '巡检') and (
+        known_row or named_row or reuse or neighbor) and not requires_circuit
+    if requires_circuit and known_row and not named_row and item['动作'] == '巡检':
         item = dict(item, 动作='绕行', 目标='作物行')
     if not retreat and re.search(r'走不通|遇到封堵|前方不通|遇到死胡同', quote):
         return [_blocked('尚不能确认封堵时要求的动作：' + quote)]
@@ -301,10 +314,23 @@ def row_steps(item, slots, previous):
     if patrol:
         if any(k in slots for k in ('distance', 'seconds')):
             return [_blocked('巡检距离或时长尚不能核实：' + quote)]
-        steps = expand(dict(item, 动作='进入', 目标='作物行'), slots)
+        count = re.search('('+NUMBER+r')\s*(圈|遍|次|趟)', quote)
+        times = quantity(count[1]) if count else 1
+        if int(times) != times or not 1 <= times <= 20:
+            return [_blocked('每次指令支持 1 至 20 次巡检')]
+        steps = expand(dict(item, 原文=quote.replace('圈', '趟'), 动作='进入', 目标='作物行'), slots)
+        if reuse:
+            steps = [{'do': 'resume_row'}]
+        if neighbor:
+            steps = [{'do': 'neighbor', 'side': 'left' if '左' in quote else 'right'}, {'do': 'enter'}]
         if steps[-1]['do'] == 'unsupported':
             return steps
-        steps.append({'do': 'patrol'})
+        leg = {'do': 'patrol'}
+        if times > 1:
+            leg['count'] = int(times)
+        if reuse and re.search(r'一共|总共|总计|补到', quote):
+            leg['total'] = True
+        steps.append(leg)
     else:
         steps = expand(item, slots)
     if known_row and not named_row and re.search(r'进去|进入|绕|巡', quote) and not re.search(r'另|下一|再找|第', quote):
@@ -342,7 +368,7 @@ def compile_semantics(answer, instruction, diagnostics=None, prior=()):
                     and any(re.search(pattern, quote) for pattern in LANDMARKS.values())):
                 item = dict(item, 动作='靠近')
             if (set(slots) == {'speed'} and re.fullmatch(
-                    r'(?:请|以|按|用|保持|速度|限速|为|的|每秒|厘米|公分|毫米|米|秒|行驶|开车|行车|开|[\d.s/cm零〇一二两三四五六七八九十百点半])+', quote)):
+                    r'(?:请|以|按|用|保持|速度|限速|别超过|设为|改为|为|的|每秒|厘米|公分|毫米|米|秒|行驶|开车|行车|开|[\d.s/cm零〇一二两三四五六七八九十百点半])+', quote)):
                 steps = [{'do': 'speed'}]
             else:
                 steps = row_steps(item, slots, [*prior, *result])
@@ -378,6 +404,10 @@ def ask(server, prompt, message, schema, tokens):
     payload = {'model': MODEL, 'temperature': 0, 'max_tokens': tokens,
                'response_format': {'type': 'json_schema', 'json_schema': {'name': 'result', 'schema': schema}},
                'messages': [{'role': 'system', 'content': prompt}, {'role': 'user', 'content': message}]}
+    if prompt.startswith(PROMPT) and os.getenv('GREENHOUSE_PATROL_LORA', '').lower() in ('1', 'true'):
+        gain = bounded(float(os.environ.get('GREENHOUSE_PATROL_LORA_SCALE', '0.75')), 0., 1.,
+                       '巡检适配器强度')
+        payload['lora'] = [{'id': 0, 'scale': gain}]
     request = Request(server.rstrip('/') + '/v1/chat/completions', json.dumps(payload).encode(),
                       {'Content-Type': 'application/json'})
     with build_opener(ProxyHandler({})).open(request, timeout=45) as response:
