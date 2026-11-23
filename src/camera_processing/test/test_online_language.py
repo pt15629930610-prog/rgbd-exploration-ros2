@@ -11,6 +11,12 @@ def compile_items(text, *items):
 
 
 class LanguageTests(unittest.TestCase):
+    def test_rightward_search_in_far_region_keeps_either_row_orientation(self):
+        q = '再到对面往右遇到第二条作物行巡检'
+        plan = compile_items(q, {'原文':q, '动作':'巡检', '目标':'作物行'})
+        self.assertEqual(plan[0], {'do':'seek', 'target':'row','ordinal':2,
+                                   'region':['front'],'search_axis':'right'})
+
     def test_scoped_speed_and_axis_do_not_constrain_row_orientation(self):
         speed = '全程以0.6米/秒的速度行驶'
         row = '到对面第二条作物行去巡检'

@@ -106,6 +106,36 @@ class DepthExitReplay(OnlineReplay):
 
 
 class OnlineRouteReplayTest(unittest.TestCase):
+    def test_reverse_along_bent_trail_to_a_distant_wide_point(self):
+        from camera_processing.frontier_planner import traversable
+        robot = OnlineReplay()
+        robot.pose = (0.,0.,0.)
+        rows,cols = np.indices(robot.grid.shape)
+        x = ORIGIN[0]+(cols+.5)*RESOLUTION
+        y = ORIGIN[1]+(rows+.5)*RESOLUTION
+        midline = lambda x: .24*np.maximum(0.,-x-.3)
+        robot.grid[:] = np.where((abs(y-midline(x)) < .58) | (x < -2.5),0,100)
+        robot.walk = traversable(robot.grid,RESOLUTION,robot.cell())
+        robot.view = RoadView(robot.grid,robot.walk,ORIGIN,RESOLUTION)
+        robot.approach_track = [(s,midline(s)) for s in np.arange(-3.5,.01,.055)]
+        recovery = robot.retreat_for_turn()
+        for _ in range(420):
+            try:
+                next(recovery)
+            except StopIteration as done:
+                self.assertTrue(done.value)
+                break
+            x,y,yaw = robot.pose
+            dt = .18
+            robot.pose = (x+dt*robot.linear*math.cos(yaw), y+dt*robot.linear*math.sin(yaw),
+                          wrap(yaw+dt*robot.angular))
+            robot.now += dt
+            self.assertTrue(robot.view.footprint_clear(robot.here,robot.pose[2],known=True))
+        else:
+            self.fail('recovery timed out')
+        self.assertLess(robot.here[0],-2.5)
+        self.assertTrue(any('分段找宽处' in msg for msg,_ in robot.events))
+
     def test_non_exit_turn_recovers_from_inside_planning_margin(self):
         robot = OnlineReplay()
         robot.pose = (0., 0., 0.)

@@ -174,6 +174,13 @@ def expand(item, slots):
         seek['ordinal'] = slots['ordinal']
     if target == 'row' and side in ('front', 'back') and verb != '转向':
         seek['search_axis'] = seek.pop('side')
+    if (target == 'row' and side in ('left', 'right') and seek.get('region')
+            and re.search(r'(?:往|向|朝)[左右](?:边|侧)?(?:走|开|行驶)?(?:遇到|碰到|找)', quote)):
+        # “对面往右遇到” describes movement to the right in the far region.
+        # It does not restrict the facing direction of the outgoing crop aisle.
+        seek['search_axis'] = seek.pop('side')
+        seek['region'] = seek['region'][:1]
+        seek.pop('area', None)
     label = item.get('物体名称', '').strip()
     if label not in quote:
         label = ''

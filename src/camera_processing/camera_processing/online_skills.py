@@ -90,7 +90,7 @@ class MotionSkills:
 
     def remember_position(self):
         if not hasattr(self, 'approach_track'):
-            self.approach_track = deque(maxlen=80)
+            self.approach_track = deque(maxlen=240)
         if not self.approach_track or math.dist(self.here, self.approach_track[-1]) >= .055:
             self.approach_track.append(self.here)
 
@@ -115,6 +115,7 @@ class MotionSkills:
         self.command()
         self.clear_path()
         origin, yaw = self.here, self.pose[2]
+        history = list(getattr(self, 'approach_track', ()))
         if not inside(self.walk, self.cell()):
             return False
         # Prefer the measured approach, then consider an observed forward pocket.
@@ -152,6 +153,82 @@ class MotionSkills:
                 self.command()
                 if math.dist(self.here, point) <= .08 and self.view.clearance_map[self.cell()] >= margin-.05:
                     return True
+        if history and math.dist(origin,self.here) > .2:
+            history = list(self.approach_track)
+        return (yield from self.retrace_to_room(history, minimums[-1]))
+
+    def slow_turn_clear(self, error):
+        cell = self.cell()
+        if (not inside(self.walk,cell) or self.view.clearance_map[cell] < .48
+                or getattr(self, 'turn_blocked', False)):
+            return False
+        hits = getattr(self, 'local_hits', None)
+        if hits is not None:
+            x,y,res = hits
+            if ((x*x+y*y) < (.48+.71*res)**2).any():
+                return False
+        n = max(1, math.ceil(abs(error)/.09))
+        return all(self.view.footprint_clear(self.here,self.pose[2]+error*i/n,known=True)
+                   for i in range(n+1))
+
+    def retrace_to_room(self, history, margin):
+        """Follow the recent driven polyline in short verified steps, including bends."""
+        near = [i for i,p in enumerate(history) if math.dist(self.here,p) <= .20]
+        if not near:
+            self.note('车迹恢复未找到与当前位姿相连的起点')
+            return False
+        points = []
+        last = self.here
+        for p in reversed(history[:near[-1]+1]):
+            length = math.dist(last,p)
+            if length < .16:
+                continue
+            if length > .45:
+                break
+            points.append(p)
+            last = p
+        self.note(f'直线换位未成功，沿近期车迹分段找宽处，可检查 {len(points)} 段')
+        for target in points:
+            start = self.now
+            while math.dist(self.here,target) > .075:
+                distance = math.dist(self.here,target)
+                error = wrap(bearing(self.here,target)-self.pose[2])
+                sign = 1 if abs(error) < math.pi/2 else -1
+                if sign < 0:
+                    error = wrap(error+math.pi)
+                yaw = self.pose[2]
+                if abs(error) >= .55 and self.now-start < 10. and self.slow_turn_clear(error):
+                    self.command(angular=max(-.22,min(.22,error)))
+                    yield
+                    continue
+                # Look ahead only as far as this control segment. Revalidate
+                # both the translation and the incremental change of heading.
+                hop = sign*min(distance,.14)
+                delta = max(-.12,min(.12,error))
+                if abs(error) >= .85 or distance >= .48:
+                    reason = '当前位姿无法衔接这段车迹'
+                elif self.now-start >= 10.:
+                    reason = '本段挪车没有及时到位'
+                elif (sign > 0 and self.forward_blocked) or not self.local_translation_clear(hop):
+                    reason = '实时局部障碍进入移动包络'
+                elif not (self.view.straight_clear(self.here,yaw,hop)
+                          and self.view.straight_clear(self.here,yaw+delta,hop)):
+                    reason = '全局移动包络含有占据、未知或越界栅格'
+                else:
+                    reason = None
+                if reason:
+                    self.command()
+                    self.note(f'分段车迹恢复中止：{reason}，位姿 {self.pose}，'
+                              f'目标 {target}，距离 {distance:.2f} m，航向差 {math.degrees(error):.0f}°')
+                    return False
+                self.command(sign*min(.07,self.speed_limit), max(-.18,min(.18,.9*error)))
+                yield
+            cell = self.cell()
+            if (inside(self.walk,cell) and self.walk[cell] and self.view.clearance_map[cell] >= margin):
+                self.command()
+                self.note(f'沿车迹到达换向点 {self.here}，继续原任务')
+                return True
+        self.command()
         return False
 
     def local_translation_clear(self, distance):
@@ -167,17 +244,28 @@ class MotionSkills:
         self.clear_path()
         start = self.now
         revision = getattr(self, 'motion_revision', 0)
+        slow = False
         while abs(wrap(yaw-self.pose[2])) > .065:
             if revision != getattr(self, 'motion_revision', 0):
                 revision, start = self.motion_revision, self.now
             if self.now-start > 22.:
                 raise Unmet('转向未达到要求的朝向')
             error = wrap(yaw-self.pose[2])
-            if self.tight_turn(error):
+            tight = self.tight_turn(error)
+            if tight and self.slow_turn_clear(error):
+                if not slow:
+                    self.note('保守转向余量不足，已核实转动包络空闲，低速转向并逐帧复核')
+                    start = self.now
+                slow = True
+                self.command(angular=max(-.20,min(.20,1.45*error)))
+                yield
+                continue
+            if tight:
                 if not (yield from self.retreat_for_turn()):
-                    raise Unmet('转向空间不足，附近没有已观测且可安全直达的换向点')
+                    raise Unmet(f'转向空间不足，已检查直线换位和分段车迹恢复，当前位姿 {self.pose}')
                 start = self.now
                 continue
+            slow = False
             self.command(angular=max(-.46, min(.46, 1.45*error)))
             yield
         self.command()
@@ -232,6 +320,9 @@ class MotionSkills:
             index = max(i, index)
             error = wrap(bearing(self.here, point)-self.pose[2])
             if self.tight_turn(error):
+                if self.slow_turn_clear(error):
+                    yield from self.aim(bearing(self.here, point))
+                    continue
                 if sum(math.dist(self.here, p)<.3 for p in tight_sites) >= 2:
                     break
                 tight_sites.append(self.here)
