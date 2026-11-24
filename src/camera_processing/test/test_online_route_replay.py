@@ -248,6 +248,22 @@ class OnlineRouteReplayTest(unittest.TestCase):
                     self.assertTrue(any('完成穿行' in m for m,_ in robot.events))
                     self.assertFalse(any('核实 door' in m for m,_ in robot.events))
 
+    def test_crossroad_at_exit_of_first_right_row(self):
+        robot = OnlineReplay()
+        robot.speed_limit = 1.
+        robot.crop_point = (-3.9, -2.2)
+        robot.exercise({'do': 'turn', 'side': 'right'})
+        robot.exercise({'do': 'seek', 'target': 'row', 'ordinal': 1})
+        robot.exercise({'do': 'enter'})
+        robot.exercise({'do': 'traverse_row'})
+        gate = robot.here
+        self.assertLess(math.dist(gate, (0., -3.1)), .45)
+        robot.exercise({'do': 'seek', 'target': 'crossroad'})
+        self.assertLess(math.dist(robot.here, gate), .45)
+        self.assertEqual(robot.feature.kind, 'crossroad')
+        robot.exercise({'do': 'turn', 'side': 'left'})
+        self.assertLess(abs(wrap(robot.pose[2] - robot.direction('left'))), .15)
+
     def test_first_cross_moves_with_unseen_aisle(self):
         for at in (-1.5, 1.8):
             with self.subTest(at=at):

@@ -40,6 +40,7 @@ class Feature:
     heading: float
     crop: tuple | None = None
     approach_yaw: float | None = None
+    row_exit: tuple | None = None
 
 
 def crossed_threshold(portal, previous, current):
@@ -445,7 +446,7 @@ class MotionSkills:
         self.vision_key = None
         return None
 
-    def seek_junction(self, step, seen=None):
+    def seek_junction(self, step, seen=None, row_exit=None):
         target = step['target']
         side = step.get('side')
         region = step.get('region', [])
@@ -464,9 +465,11 @@ class MotionSkills:
         while True:
             yield from self.aim(yaw)
             forced = self.view.clearance(self.here, yaw) < .65
-            candidates = yield from self.probe(yaw, tracker, force=forced)
+            at_exit = row_exit is not None and math.dist(self.here, row_exit) <= .45
+            candidates = yield from self.probe(yaw, tracker, force=forced or at_exit)
             for j in candidates:
-                if components(origin, j.point, yaw)[0] < (.55 if seen is None else -.35):
+                current_exit = at_exit and math.dist(j.point, row_exit) <= .45
+                if not current_exit and components(origin, j.point, yaw)[0] < (.55 if seen is None else -.35):
                     continue
                 if (search_axis and counted and
                         components(counted[-1], j.point, self.direction(search_axis))[0] < -.75):
@@ -874,6 +877,7 @@ class MotionSkills:
                 if len(arms) == 2 or (arms and self.view.observed_dead_end(j.point, yaw, banks=False)):
                     yield from self.travel(j.point)
                     self.entered = self.loop_trace = None
+                    row.row_exit = j.point
                     self.note(f'到达作物行另一端实测横道 {j.point}，完成穿行')
                     return
             if (yield from self.drive_path(self.view.advance(self.here, yaw, .72))):
@@ -910,6 +914,9 @@ class MotionSkills:
 
     def run_skill(self, step, next_step):
         op = step['do']
+        row_exit = self.feature.row_exit if self.feature is not None else None
+        if row_exit is not None:
+            self.feature.row_exit = None
         if op == 'speed':
             self.command()
         elif op == 'patrol_rows':
@@ -917,7 +924,10 @@ class MotionSkills:
         elif op == 'seek':
             self.feature = self.entered = self.loop_trace = None
             kind = step['target']
-            if kind in ('crossroad', 'opening', 'row'):
+            if kind == 'crossroad' and row_exit is not None:
+                self.note(f'先复核刚到达的行末横道 {row_exit} 是否四向连通')
+                yield from self.seek_junction(step, row_exit=row_exit)
+            elif kind in ('crossroad', 'opening', 'row'):
                 yield from self.seek_junction(step)
             else:
                 if kind == 'door' and next_step == 'exit':
