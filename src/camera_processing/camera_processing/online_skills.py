@@ -29,6 +29,10 @@ class Unmet(RuntimeError):
     """A requested action could not be verified from the live observations."""
 
 
+class SearchExhausted(Unmet):
+    """No more reachable candidates along this search course."""
+
+
 @dataclass
 class Feature:
     kind: str
@@ -441,7 +445,7 @@ class MotionSkills:
         self.vision_key = None
         return None
 
-    def seek_junction(self, step):
+    def seek_junction(self, step, seen=None):
         target = step['target']
         side = step.get('side')
         region = step.get('region', [])
@@ -449,6 +453,8 @@ class MotionSkills:
         search_axis = step.get('search_axis')
         yaw = (self.direction(search_axis) if search_axis else
                self.direction(region[0]) if region else self.direction(side) if area else self.course)
+        if seen is not None:
+            yaw=self.course
         self.course = yaw
         origin = self.here
         ordinal = step.get('ordinal', 1)
@@ -460,7 +466,7 @@ class MotionSkills:
             forced = self.view.clearance(self.here, yaw) < .65
             candidates = yield from self.probe(yaw, tracker, force=forced)
             for j in candidates:
-                if components(origin, j.point, yaw)[0] < .55:
+                if components(origin, j.point, yaw)[0] < (.55 if seen is None else -.35):
                     continue
                 if (search_axis and counted and
                         components(counted[-1], j.point, self.direction(search_axis))[0] < -.75):
@@ -476,6 +482,9 @@ class MotionSkills:
                         continue
                 else:
                     directions = list(self.branches(j, yaw, None if area else side))
+                    if seen is not None:
+                        directions = [a for a in directions if not any(
+                            math.dist(j.point,f.point)<.95 and math.cos(a-f.heading)>.7 for f in seen)]
                     directions = [angle for angle in directions if self.in_region(offset(j.point, angle, 1.3), region)]
                     if 'parallel_to' in step:
                         directions = [a for a in directions if math.cos(a-step['parallel_to']) > .8]
@@ -537,7 +546,7 @@ class MotionSkills:
                     tracker = JunctionTracker()
                     self.note(f'主通道尚未数够行口，回到已观测岔口 {gate} 检查侧道')
                 continue
-            if area or region or search_axis:
+            if seen is None and (area or region or search_axis):
                 path = self.view.frontier_path(self.here, direction=yaw, visited=visited)
                 if path and len(path) > 3 and (not search_axis or
                         components(self.here, self.xy(path[-1]), yaw)[0] > .15):
@@ -546,7 +555,76 @@ class MotionSkills:
                     if not moved or math.dist(self.here, end) < .45:
                         visited.append(end)
                     continue
-            raise Unmet(f'沿途已确认 {len(counted)}/{ordinal} 处 {target}，没有再观测到可达的指定路口')
+            raise SearchExhausted(f'沿途已确认 {len(counted)}/{ordinal} 处 {target}，没有再观测到可达的指定路口')
+
+    def patrol_rows(self, step):
+        seen, finished, visited = [], [], []
+        anchor, course = self.here, self.course
+        indices = step.get('indices', [])
+        search = dict(step['filter'])
+        axis = search.pop('search_axis',None)
+        if search.pop('area',False):
+            side=search.pop('side')
+            search['region']=list(dict.fromkeys([*search.get('region',[]),side]))
+            axis=axis or side
+        if axis:
+            course=self.direction(axis)
+        def inspect(row):
+            self.feature = row
+            yield from self.enter()
+            yield from self.run_skill({'do':'patrol','count':step['count']},None)
+            finished.append(row)
+            self.note(f'已完成 {len(finished)} 个现场核实的行口，最近行口 {row.point}')
+            self.deadline = self.now + 720.*step['count']
+        if step.get('start'):
+            yield from self.seek_junction(step['start'])
+            yield from inspect(self.feature)
+            if not step.get('all'):
+                seen.append(self.feature)
+            else:
+                yield from self.travel(anchor)
+        self.course = course
+        directions = iter([course+math.pi/2,course-math.pi/2,course+math.pi])
+        remaining = list(indices)
+        while True:
+            while remaining and remaining[0]<=len(seen):
+                row=seen[remaining.pop(0)-1]
+                if row not in finished:
+                    yield from inspect(row)
+                    if remaining:
+                        yield from self.travel(seen[-1].point)
+                        self.course=seen[-1].approach_yaw
+            if indices and not remaining:
+                return
+            try:
+                yield from self.seek_junction(search, seen=seen)
+            except SearchExhausted:
+                yaw = next(directions,None)
+                if yaw is not None:
+                    yield from self.travel(anchor)
+                    self.course = yaw
+                    continue
+                path = self.view.frontier_path(self.here,visited=visited)
+                if path and len(path)>1:
+                    end = self.xy(path[-1])
+                    visited.append(end)
+                    if not (yield from self.drive_path(path)):
+                        raise Unmet('剩余探索边界暂时无法安全抵达')
+                    self.course=bearing(self.xy(path[0]),end)
+                    anchor=self.here
+                    directions=iter([self.course+math.pi/2,self.course-math.pi/2,self.course+math.pi])
+                    continue
+                if remaining or not finished:
+                    raise Unmet(f'已观测 {len(seen)} 个不同行口，未找到要求的其余行')
+                self.note(f'当前可达探索边界已耗尽，完成 {len(finished)} 个已核实行口')
+                return
+            row=self.feature
+            seen.append(row)
+            course=row.approach_yaw
+            if step.get('all') and not any(math.dist(row.point,f.point)<.95 and
+                                           math.cos(row.heading-f.heading)>.7 for f in finished):
+                yield from inspect(row)
+            self.course=course
 
     def inspect_panel(self, panel, verified):
         """Look beside a measured door leaf from reachable, front-facing viewpoints."""
@@ -834,6 +912,8 @@ class MotionSkills:
         op = step['do']
         if op == 'speed':
             self.command()
+        elif op == 'patrol_rows':
+            yield from self.patrol_rows(step)
         elif op == 'seek':
             self.feature = self.entered = self.loop_trace = None
             kind = step['target']

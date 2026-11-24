@@ -378,6 +378,14 @@ def compile_semantics(answer, instruction, diagnostics=None, prior=()):
         gap = original[cursor:start]
         cursor = start + len(quote)
         try:
+            # “行作物” is a spoken inversion of “作物行”. Keep the original span for audit.
+            quote = quote.replace('行作物', '作物行')
+            item = dict(item, 原文=item['原文'].replace('行作物','作物行'))
+            if re.fullmatch(r'(?:先|再|然后|接着)?(?:直走|直行|往前直走|向前直行)', quote):
+                item = {'原文': quote, '动作':'行驶'}
+            elif re.search(r'巡检|巡查|巡视', quote) and re.search(LANDMARKS['row'], quote) and not CONDITION.search(quote):
+                if item['动作'] not in ('询问','未支持','绕行'):
+                    item = dict(item, 动作='巡检', 目标='作物行')
             slots = measurements(quote)
             if ('seconds' in slots and item['动作'] in ('等待', '寻找')
                     and re.search(r'去|到|靠近|门前|门口', quote)
@@ -413,6 +421,11 @@ def compile_semantics(answer, instruction, diagnostics=None, prior=()):
         result.extend(steps)
     if _significant(original[cursor:]):
         raise ValueError('模型遗漏了指令结尾：' + original[cursor:])
+    if (len(result)>1 and result[0]=={'do':'advance','distance':1.}
+            and re.fullmatch(r'先?(?:直走|直行|向前直行|往前直走)',_compact(items[0]['原文']))
+            and result[1].get('do')=='seek' and result[1].get('target') in ('crossroad','opening')):
+        # The search drives forward while observing. A blind initial metre could skip the junction.
+        result.pop(0)
     return result
 
 
@@ -483,6 +496,12 @@ def interpret_span(server, instruction, diagnostics, prior=()):
 def interpret_online(server, instruction, diagnostics=None):
     if not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 600:
         raise ValueError('请输入 1～600 字的路线指令')
+    from .row_collection import collection_plan
+    collection = collection_plan(instruction, lambda part: interpret_online(server,part,diagnostics))
+    if collection is not None:
+        if diagnostics is not None:
+            diagnostics.append('巡检范围与数量约束 '+json.dumps(collection,ensure_ascii=False))
+        return collection
     # Bind the entire consequence to a measured blocked-row outcome.
     branch = re.search(r'(?:如果|要是|若|遇到)?(?:行不通|走不通|前方被堵|遇到封堵)'
                        r'(?:的时候|时|了)?(?:就|则)(?=(?:去|找|寻找|改去|转去))', instruction)

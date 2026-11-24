@@ -2,7 +2,8 @@
 
 import argparse
 from collections import defaultdict
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
+import errno
 import json
 from pathlib import Path
 import re
@@ -20,20 +21,40 @@ def read(path):
 
 
 @contextmanager
-def client(root, adapter, port, log):
+def client(root, adapter, port, log, shared=False):
     directory = root.parent
-    with socket.socket() as probe:
-        probe.bind(('127.0.0.1',port))
+    opener = build_opener(ProxyHandler({}))
+    def api(path, body=None, timeout=120):
+        request = Request(f'http://127.0.0.1:{port}'+path,
+                          json.dumps(body).encode() if body else None, {'Content-Type':'application/json'})
+        with opener.open(request,timeout=timeout) as resp:
+            return json.load(resp)
+    try:
+        with socket.socket() as probe:
+            probe.bind(('127.0.0.1',port))
+    except OSError as exc:
+        if not shared or exc.errno not in (errno.EADDRINUSE, errno.EACCES, 10048, 10013):
+            raise
+        try:
+            adapters = api('/lora-adapters',timeout=3)
+            matches = any(a.get('id')==0 and a.get('path') and
+                          (directory/a['path']).resolve()==adapter.resolve() for a in adapters)
+            matches = matches and any(m.get('id')==MODEL for m in api('/v1/models',timeout=3)['data'])
+        except (OSError,ValueError,TypeError,AttributeError,KeyError):
+            matches = False
+        if matches:
+            print(f'已连接本机巡检模型（端口 {port}）。')
+            yield api
+            return
+        with socket.socket() as probe:
+            probe.bind(('127.0.0.1',0))
+            port = probe.getsockname()[1]
+        log = log.with_name(f'{log.stem}-{port}.log')
+        print(f'默认端口已被占用，本次预览使用 {port}。')
     cmd = [str(directory/'gpu-bin/llama-server.exe'), '-m', 'Qwen3VL-2B-Instruct-Q4_K_M.gguf',
            '--lora-scaled',str(adapter.relative_to(directory))+':0','--lora-init-without-apply',
            '--device','Vulkan0','-ngl','99','-fa','off','-b','128','-ub','32','-c','4096',
            '-np','1','--alias',MODEL,'--host','127.0.0.1','--port',str(port)]
-    opener = build_opener(ProxyHandler({}))
-    def api(path, body=None):
-        request = Request(f'http://127.0.0.1:{port}'+path,
-                          json.dumps(body).encode() if body else None, {'Content-Type':'application/json'})
-        with opener.open(request,timeout=120) as resp:
-            return json.load(resp)
     with log.open('wb') as stream:
         process = subprocess.Popen(cmd,cwd=directory,stdout=stream,stderr=stream,
                                    creationflags=subprocess.CREATE_NO_WINDOW)
@@ -118,26 +139,50 @@ def coached(api, text, mark_rates=True):
 
 def preview(api, text):
     reply = coached(api,text)
-    schema = {'type':'object','properties':{'覆盖行':{'enum':['各条符合条件的行','选中的一行','信息不足']}},
+    actions = reply['动作序列']
+    allow_start = sum(a['动作']=='巡检' for a in actions)>1 and not any(a['动作']=='指定起始行' for a in actions)
+    choices = ['各条符合条件的行','选中的一行','信息不足']
+    schema = {'type':'object','properties':{'覆盖行':{'enum':choices}},
               'required':['覆盖行'],'additionalProperties':False}
     for action in reply['动作序列']:
         if action['动作'] != '巡检':
             continue
-        prompt = ('判断给定片段要求巡视的行集合。遍历所有符合限定条件的行选“各条符合条件的行”；'
+        classify_start = allow_start and not any(a['动作']=='指定起始行' for a in actions)
+        schema['properties']['覆盖行']['enum'] = choices + (['整次任务的起始行'] if classify_start else [])
+        prompt = ('结合整句判断当前片段的作用。遍历所有符合限定条件的行选“各条符合条件的行”；'
                   '进指定的一排、一条或同一行重复几趟选“选中的一行”。缺少可确定的要求选“信息不足”。'
                   '指定起点只决定先后顺序。请集中判断所给片段。')
+        if classify_start:
+            prompt += '如果本段交代巡查从哪一行做起，而另一个片段规定巡查哪些行，本段选“整次任务的起始行”。先巡一行再巡另一行属于两个独立任务。'
         response=api('/v1/chat/completions',dict(model=MODEL,temperature=0,seed=731,max_tokens=80,
                      lora=[dict(id=0,scale=0.75)],response_format=dict(type='json_schema',
                      json_schema=dict(name='coverage',schema=schema)),messages=[
                          dict(role='system',content=prompt),
                          dict(role='user',content='整句：'+text+'\n巡检片段：'+action['原文'])]))
         scope=json.loads(response['choices'][0]['message']['content'])['覆盖行']
+        quote=action['原文']
+        # Bind explicit quantifiers within this clause only; the model handles implicit coverage.
+        universal=re.search(r'(?:所有(?:的)?|全部(?:的)?|每(?:一)?(?:条|排|行))[^，。；]{0,8}(?:行|作物|种植|菜)',quote)
+        single=re.search(r'(?:只|仅)(?:需|要)?(?:巡检|巡查|巡视|巡|检查|看)[^，。；]{0,12}(?:第.+?|这|那|一)(?:条|排|行)',quote)
+        if scope!='整次任务的起始行' and not re.search(r'不|别|除|如果|要是',quote):
+            if universal and not single:
+                scope='各条符合条件的行'
+            elif single and not universal:
+                scope='选中的一行'
         if scope=='信息不足':
             raise ValueError('模型未能确认巡检范围：'+action['原文'])
-        if scope=='各条符合条件的行':
+        if scope=='整次任务的起始行':
+            action.update(动作='指定起始行',目标='作物行')
+            action.pop('范围',None)
+        elif scope=='各条符合条件的行':
             action['范围']='全部'
         else:
             action.pop('范围',None)
+    for action in actions:
+        if action['动作']=='指定起始行':
+            sides=set(re.findall('[左右]',action['原文']))
+            if len(sides)==1:
+                action['方位']=sides.pop()
     return reply
 
 
@@ -155,8 +200,10 @@ def run(root, experiment, variant, port, interactive):
     dest = experiment/'evaluation'
     dest.mkdir(exist_ok=True)
     adapter = (root if variant == 'previous' else experiment)/'adapter/patrol-lora.gguf'
-    with client(root,adapter,port,dest/f'{variant}-server.log') as api:
-        if interactive:
+    log = dest/f'{variant}-server.log'
+    if interactive:
+        with ExitStack() as session:
+            api = session.enter_context(client(root,adapter,port,log,shared=True))
             while True:
                 try:
                     text = input('巡检指令（回车退出）> ').strip()
@@ -165,10 +212,17 @@ def run(root, experiment, variant, port, interactive):
                 if not text:
                     break
                 try:
-                    print(json.dumps(preview(api,text),ensure_ascii=False,indent=2))
+                    try:
+                        result = preview(api,text)
+                    except OSError:
+                        session.close()
+                        api = session.enter_context(client(root,adapter,port,log,shared=True))
+                        result = preview(api,text)
+                    print(json.dumps(result,ensure_ascii=False,indent=2))
                 except ValueError as exc:
                     print('解析未通过完整性校验。', exc)
             return
+    with client(root,adapter,port,log) as api:
         rows = [('contrast',r) for r in read(experiment/'data/test.jsonl')]
         rows += [('paraphrase',r) for r in read(experiment/'data/paraphrase.jsonl')]
         rows += [('incident',r) for r in read(experiment/'data/incident.jsonl')]
