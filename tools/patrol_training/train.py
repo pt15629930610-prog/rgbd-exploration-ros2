@@ -112,8 +112,12 @@ def main():
     parser.add_argument('--epochs', type=int, default=4)
     parser.add_argument('--group', type=int, default=12)
     parser.add_argument('--rank', type=int, default=32)
+    parser.add_argument('--experiment', type=Path, help='Separate data, cache and selected weights')
+    parser.add_argument('--resume', type=Path, help='Initialize both learned matrices from best.pt')
+    parser.add_argument('--lr', type=float, default=0.00045)
     args = parser.parse_args()
     root = args.root
+    experiment = args.experiment or root
     sys.path.insert(0, str(root / 'deps'))
     global torch, F
     import torch
@@ -126,7 +130,7 @@ def main():
     torch.manual_seed(731)
     assert torch.cuda.is_available() and torch.cuda.is_bf16_supported()
     base = root / 'base'
-    out = root / 'runs' / datetime.now().strftime('%Y%m%d-%H%M%S-%f')
+    out = experiment / 'runs' / datetime.now().strftime('%Y%m%d-%H%M%S-%f')
     out.mkdir(parents=True)
     config = json.loads((base / 'config.json').read_text())['text_config']
     assert config['num_hidden_layers'] == 28 and config['tie_word_embeddings']
@@ -135,10 +139,10 @@ def main():
     records = []
     signature = hashlib.sha256((base / 'revision.txt').read_bytes() + b'cache-v1')
     for split in ('train', 'validation'):
-        data = (root / 'data' / (split + '.jsonl')).read_bytes()
+        data = (experiment / 'data' / (split + '.jsonl')).read_bytes()
         signature.update(data)
         rows = [json.loads(line) for line in data.decode().splitlines()]
-        personal = root / 'data' / 'personal_train.jsonl'
+        personal = experiment / 'data' / 'personal_train.jsonl'
         if split == 'train' and personal.exists():
             extra = personal.read_bytes()
             signature.update(extra)
@@ -149,7 +153,7 @@ def main():
         records.extend(rows)
     if len({row['id'] for row in records}) != len(records):
         raise ValueError('Training and validation need unique example IDs')
-    cache = root / 'activation_cache' / signature.hexdigest()[:16]
+    cache = experiment / 'activation_cache' / signature.hexdigest()[:16]
     cache.mkdir(parents=True, exist_ok=True)
     with safe_open(str(base / 'model.safetensors'), framework='pt', device='cpu') as weights:
         packed = pack([r for r in records if not (cache / (r['id'] + '.pt')).exists()], tok)
@@ -163,7 +167,13 @@ def main():
     a = torch.nn.Parameter(torch.empty(args.rank, config['intermediate_size'], device='cuda'))
     b = torch.nn.Parameter(torch.zeros(config['hidden_size'], args.rank, device='cuda'))
     torch.nn.init.kaiming_uniform_(a, a=math.sqrt(5))
-    opt = torch.optim.AdamW([a, b], lr=0.00045)
+    if args.resume:
+        checkpoint = torch.load(args.resume, map_location='cpu', weights_only=True)
+        with torch.no_grad():
+            a.copy_(checkpoint['A'])
+            b.copy_(checkpoint['B'])
+        (out / 'parent.sha256').write_text(hashlib.sha256(args.resume.read_bytes()).hexdigest())
+    opt = torch.optim.AdamW([a, b], lr=args.lr)
 
     def epoch(names, training):
         loss_sum = 0.0
@@ -204,7 +214,7 @@ def main():
         (out / 'history.json').write_text(json.dumps(history, indent=2))
     if not (out / 'patrol-lora.gguf').exists():
         raise RuntimeError('Validation loss did not improve over the base model. See ' + str(out))
-    active = root / 'adapter'
+    active = experiment / 'adapter'
     active.mkdir(exist_ok=True)
     for name in ('best.pt', 'history.json', 'patrol-lora.gguf'):
         stage = active / (name + '.tmp')
