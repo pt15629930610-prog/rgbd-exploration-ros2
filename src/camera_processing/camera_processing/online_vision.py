@@ -254,6 +254,7 @@ class LiveVision:
         self.pool = ThreadPoolExecutor(max_workers=1)
         self.pair = self.intrinsics = self.pending = self.key = None
         self.generation = 0
+        self.capture_until = math.inf
         self.last = -math.inf
         self.poses = deque(maxlen=100)
         node.create_subscription(CameraInfo, '/rgbd_camera/camera_info', self.info, qos_profile_sensor_data)
@@ -281,6 +282,7 @@ class LiveVision:
 
     def reset(self):
         self.generation += 1
+        self.capture_until = math.inf
         self.last = self.pair[0] if self.pair else -math.inf
         self.key = None
 
@@ -301,7 +303,7 @@ class LiveVision:
         if not self.pair or not self.intrinsics or not self.poses:
             return None
         stamp, rgb, depth = self.pair
-        if stamp <= self.last or not -.1 <= now-stamp <= .7:
+        if stamp <= self.last or stamp > self.capture_until or not -.1 <= now-stamp <= .7:
             return None
         ts, pose = min(self.poses, key=lambda sample: abs(sample[0]-stamp))
         if abs(ts-stamp) > .12:

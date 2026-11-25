@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 
 from camera_processing.online_roads import RoadView
-from camera_processing.online_skills import Feature, MotionSkills, crossed_threshold, wrap
+from camera_processing.online_skills import Feature, MotionSkills, Unmet, crossed_threshold, wrap
 from camera_processing.frontier_planner import obstacle_distance
 from camera_processing.online_vision import depth_openings
 from test_greenhouse_route import ORIGIN, RESOLUTION, SimulatedRoute, cell
@@ -26,6 +26,7 @@ class OnlineReplay(MotionSkills, SimulatedRoute):
         self.feature = self.entered = self.loop_trace = self.vision_key = self.portal = None
         self.vision = SimpleNamespace(reset=lambda: None)
         self.events = []
+        self.observed_targets = []
 
     def note(self, message):
         self.events.append((message, self.here))
@@ -106,6 +107,45 @@ class DepthExitReplay(OnlineReplay):
 
 
 class OnlineRouteReplayTest(unittest.TestCase):
+    def test_record_and_stop_on_the_same_sightline(self):
+        for effect in ('record', 'stop'):
+            with self.subTest(effect=effect):
+                robot = OnlineReplay()
+                robot.truth[:] = 0
+                robot.crop_point = (-1., 0.)
+                robot.speed_limit = .35
+                robot.exercise({'do':'advance', 'distance':3.,
+                                'watch':{'target':'door', 'effect':effect, 'side':'front'}})
+                self.assertTrue(any('途中确认 door' in msg for msg, _ in robot.events))
+                if effect == 'record':
+                    self.assertAlmostEqual(robot.here[0], -3., delta=.22)
+                    robot.exercise({'do':'seek','target':'door','side':'front'}, 'approach')
+                    self.assertEqual(robot.feature.point, robot.crop_point)
+                else:
+                    self.assertLess(robot.here[0], -5.)
+                    self.assertEqual(robot.linear, 0.)
+
+    def test_watch_crossroad_at_different_locations_and_reject_t(self):
+        for at, four_way in [(-3., True), (-1.5, True), (-3., False)]:
+            with self.subTest(at=at, four_way=four_way):
+                robot = OnlineReplay()
+                robot.speed_limit = .45
+                rows, cols = np.indices(robot.truth.shape)
+                x = ORIGIN[0]+(cols+.5)*RESOLUTION
+                y = ORIGIN[1]+(rows+.5)*RESOLUTION
+                branch = (abs(x-at)<.93) & ((y>0) | four_way)
+                robot.truth[:] = np.where((abs(y)<.93) | branch, 0, 100)
+                step = {'do':'advance', 'distance':6.,
+                        'watch':{'target':'crossroad','effect':'turn','turn_side':'left'}}
+                if four_way:
+                    robot.exercise(step)
+                    self.assertLess(math.dist(robot.here, (at,0.)), .4)
+                    self.assertAlmostEqual(robot.pose[2], math.pi/2, delta=.15)
+                else:
+                    with self.assertRaisesRegex(Unmet, '0/1'):
+                        robot.exercise(step)
+                    self.assertFalse(any('途中确认' in s for s,_ in robot.events))
+
     def test_reverse_along_bent_trail_to_a_distant_wide_point(self):
         from camera_processing.frontier_planner import traversable
         robot = OnlineReplay()
@@ -263,6 +303,19 @@ class OnlineRouteReplayTest(unittest.TestCase):
         self.assertEqual(robot.feature.kind, 'crossroad')
         robot.exercise({'do': 'turn', 'side': 'left'})
         self.assertLess(abs(wrap(robot.pose[2] - robot.direction('left'))), .15)
+
+    def test_monitor_during_actual_row_traversal(self):
+        robot = OnlineReplay()
+        robot.speed_limit = .6
+        robot.crop_point = (-3.9, -2.2)
+        robot.exercise({'do':'turn','side':'right'})
+        robot.exercise({'do':'seek','target':'row','ordinal':1})
+        robot.exercise({'do':'enter'})
+        robot.exercise({'do':'traverse_row', 'watch':{
+            'target':'crossroad','effect':'turn','turn_side':'left'}})
+        self.assertLess(math.dist(robot.here, (0., -3.1)), .45)
+        self.assertAlmostEqual(robot.pose[2], robot.direction('left'), delta=.15)
+        self.assertIsNone(robot.loop_trace)
 
     def test_first_cross_moves_with_unseen_aisle(self):
         for at in (-1.5, 1.8):

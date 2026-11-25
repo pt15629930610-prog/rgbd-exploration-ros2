@@ -11,6 +11,34 @@ def compile_items(text, *items):
 
 
 class LanguageTests(unittest.TestCase):
+    def test_scoped_observation_and_recovery_preserve_followup(self):
+        from camera_processing.stage_language import PARTS
+        main = '以0.3米/秒沿左边第一条草莓行巡一趟'
+        condition = '途中看到右门就记下来'
+        after = '如果行末堵了就原路返回，巡完后去右门前1米停'
+        def ask(server, prompt, text, schema, tokens):
+            if '响应' in schema['properties']:
+                return dict(zip(PARTS, (main, condition, after)), 目标原话='右门', 响应='记录并继续')
+            verb = '巡检' if '巡' in text else '靠近'
+            return {'动作序列':[{'原文':text,'动作':verb}]}
+        with patch('camera_processing.online_language.ask', side_effect=ask):
+            plan = interpret_online('unused', '，'.join((main, condition, after)))
+        self.assertEqual([s['do'] for s in plan], ['speed','seek','enter','patrol','seek','approach'])
+        self.assertEqual(plan[0]['speed'], .3)
+        self.assertEqual((plan[1]['label'],plan[1]['ordinal'],plan[1]['side']), ('草莓',1,'left'))
+        self.assertEqual(plan[3]['watch'], dict(effect='record',target='door',side='right'))
+        self.assertEqual(plan[-1]['distance'], 1.)
+
+    def test_interruption_scope_and_ambiguous_responses(self):
+        from camera_processing.stage_language import scoped_plan, split_rule
+        self.assertIsNone(scoped_plan('unused','穿过第一条作物行，然后在十字路口左拐',None))
+        self.assertEqual(split_rule('一遇到第二个十字路口就右转'),
+                         dict(target='crossroad', ordinal=2, effect='turn', turn_side='right'))
+        self.assertEqual(split_rule('期间看到右门就停')['effect'], 'stop')
+        for phrase in ('途中没有看到门就停','途中看见门就停三秒','途中遇到右门或十字路口就停'):
+            with self.assertRaises(ValueError):
+                split_rule(phrase)
+
     def test_rightward_search_in_far_region_keeps_either_row_orientation(self):
         q = '再到对面往右遇到第二条作物行巡检'
         plan = compile_items(q, {'原文':q, '动作':'巡检', '目标':'作物行'})

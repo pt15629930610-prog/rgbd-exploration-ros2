@@ -119,6 +119,9 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
         if self.pending is not None:
             self.pending.cancel()
         self.pending = None
+        close_program = getattr(self.program, 'close', None)
+        if close_program is not None:
+            close_program()
         self.program = None
         self.phase = 'idle'
         self.vision.reset()
@@ -140,6 +143,7 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
             # A new command starts at the current robot; cardinal language still refers to entrance.
             self.course = self.pose[2]
         self.speed_limit = .16
+        self.observed_targets = []
         self.skipped = []
         self.trace = []
         self.pending = self.worker.submit(interpret_online, self.server, text, self.trace)

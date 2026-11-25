@@ -379,7 +379,11 @@ class MotionSkills:
         """Merge candidate observations across fresh maps and short, targeted side looks."""
         def collect():
             observations = self.view.junctions(self.here, travel_yaw)
-            return tracker.update(observations, self.stamps['global'])
+            confirmed = tracker.update(observations, self.stamps['global'])
+            events = getattr(self, 'stage_crossings', None)
+            if events is not None:
+                events.extend((j, travel_yaw) for j in confirmed)
+            return confirmed
 
         seen = list(collect())
         sides = self.view.probe_sides(self.here, travel_yaw)
@@ -912,7 +916,115 @@ class MotionSkills:
         if not self.crossed:
             raise Unmet('缺少连续位姿穿越观测门槛的证据')
 
+    def watch_sector(self, point, side):
+        if not side:
+            return True
+        return (math.dist(self.entrance[:2], point) > .45 and
+                abs(wrap(bearing(self.entrance, point)-self.direction(side))) < math.radians(55))
+
+    def run_watched(self, step, next_step):
+        host = dict(step)
+        rule = host.pop('watch')
+        if host['do'] not in ('advance', 'traverse_row', 'loop', 'patrol') or 'if_blocked' in host:
+            raise Unmet('当前运动阶段不支持该监测范围')
+        target, effect = rule['target'], rule['effect']
+        motion = self.run_skill(host, next_step)
+        tracker = JunctionTracker()
+        counted = []
+        axis = self.course if host['do'] != 'advance' or not host.get('side') else self.direction(host['side'])
+        stamp = -math.inf
+        last_peek = None
+        fired = False
+        finished = None
+        if target != 'crossroad':
+            self.vision_start(target, rule.get('label', ''))
+        else:
+            self.stage_crossings = deque(maxlen=32)
+        self.note(f'开始途中监测 {rule}')
+        try:
+            while True:
+                features = []
+                if not fired and target == 'crossroad' and self.stamps['global'] >= stamp+.15:
+                    stamp = self.stamps['global']
+                    # Keep the approach axis stable during side looks. A four-way crossing
+                    # has the same topology when viewed along either aisle.
+                    observed = self.view.junctions(self.here, axis, horizon=1.5)
+                    confirmed = tracker.update(observed, stamp)
+                    if (host['do'] == 'advance' and finished is None and abs(wrap(self.pose[2]-axis)) < .25
+                            and (last_peek is None or math.dist(last_peek, self.here) > .55)
+                            and self.view.probe_sides(self.here, axis)):
+                        last_peek = self.here
+                        self.command()
+                        confirmed = yield from self.probe(axis, tracker)
+                    self.stage_crossings.extend((j, axis) for j in confirmed)
+                if not fired and target == 'crossroad':
+                    while self.stage_crossings:
+                        j, approach = self.stage_crossings.popleft()
+                        if ({'left','right','forward','back'} <= j.branches
+                                and math.dist(self.here, j.point) <= 1.5):
+                            features.append(Feature(target, j.point, approach))
+                elif not fired and target != 'crossroad':
+                    e = self.match(lambda p: self.watch_sector(p, rule.get('side')) and
+                                   all(math.dist(p, old) > .9 for old in counted))
+                    if e is not None:
+                        features.append(Feature(target, e.point, e.heading if e.heading is not None
+                                                else bearing(e.pose, e.point)))
+                for feature in features:
+                    if (not self.watch_sector(feature.point, rule.get('side'))
+                            or any(math.dist(feature.point, p) < .9 for p in counted)):
+                        continue
+                    counted.append(feature.point)
+                    if len(counted) != rule.get('ordinal', 1):
+                        continue
+                    fired = True
+                    self.note(f'途中确认 {target} 第 {len(counted)} 处 {feature.point}，响应 {effect}')
+                    if target != 'crossroad':
+                        self.vision_key = None
+                        self.vision.reset()
+                    if effect == 'record':
+                        self.observed_targets.append((feature, rule.get('label', '')))
+                        break
+                    self.command()
+                    self.clear_path()
+                    motion.close()
+                    self.loop_trace = self.entered = None
+                    self.feature = feature
+                    if effect == 'turn':
+                        yield from self.travel(feature.point)
+                        yield from self.run_skill({'do':'turn', 'side':rule['turn_side']}, None)
+                    return
+                if finished is not None:
+                    # Give the last in-scope exposure time to finish; the car is stationary.
+                    if (not fired and target != 'crossroad' and self.now < finished+5.
+                            and getattr(self.vision, 'pending', None) is not None):
+                        yield
+                        continue
+                    if not fired and effect != 'record':
+                        raise Unmet(f'运动阶段结束，途中确认 {target} {len(counted)}/{rule.get("ordinal",1)} 处')
+                    if not fired:
+                        self.note(f'运动阶段结束，未记录到指定的 {target}')
+                    return
+                try:
+                    next(motion)
+                except StopIteration:
+                    self.command()
+                    finished = self.now
+                    if target != 'crossroad' and not fired:
+                        self.vision.capture_until = finished
+                    continue
+                yield
+        finally:
+            motion.close()
+            if target != 'crossroad':
+                self.vision_key = None
+                self.vision.reset()
+            else:
+                self.stage_crossings = None
+
     def run_skill(self, step, next_step):
+        if 'watch' in step:
+            yield from self.run_watched(step, next_step)
+            return
         op = step['do']
         row_exit = self.feature.row_exit if self.feature is not None else None
         if row_exit is not None:
@@ -932,6 +1044,16 @@ class MotionSkills:
             else:
                 if kind == 'door' and next_step == 'exit':
                     kind = 'exit'
+                # A saved observation identifies a particular target in this instruction.
+                # The approach skill still rechecks it from its requested stopping pose.
+                if (kind in ('door', 'crop') and next_step == 'approach'
+                        and step.get('ordinal', 1) == 1 and not step.get('region')):
+                    for feature, label in reversed(getattr(self, 'observed_targets', [])):
+                        if (feature.kind == kind and label == step.get('label', '')
+                                and self.watch_sector(feature.point, step.get('side'))):
+                            self.feature = feature
+                            self.note(f'采用途中实测的 {kind} 位置 {feature.point}')
+                            return
                 yield from self.seek_visual(step, kind)
         elif op in ('resume_row', 'neighbor'):
             previous = getattr(self, 'last_row', None)

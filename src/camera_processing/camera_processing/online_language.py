@@ -496,6 +496,10 @@ def interpret_span(server, instruction, diagnostics, prior=()):
 def interpret_online(server, instruction, diagnostics=None):
     if not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 600:
         raise ValueError('请输入 1～600 字的路线指令')
+    from .stage_language import scoped_plan
+    plan = scoped_plan(server, instruction, diagnostics)
+    if plan is not None:
+        return plan
     from .row_collection import collection_plan
     collection = collection_plan(instruction, lambda part: interpret_online(server,part,diagnostics))
     if collection is not None:
