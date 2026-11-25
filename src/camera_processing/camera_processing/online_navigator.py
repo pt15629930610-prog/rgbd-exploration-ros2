@@ -156,6 +156,8 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
             self.recovery_sites = []
             self.started = self.now
             self.deadline = self.now + max(720.*step.get('count', 1), step.get('seconds', 0.)+30.)
+            if step['do'] == 'seek' and step.get('target') == 'door':
+                self.deadline = self.now + 3600.
             self.vision_key = None
             self.vision.reset()
             self.clear_path()

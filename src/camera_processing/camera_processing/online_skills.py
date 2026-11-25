@@ -450,18 +450,20 @@ class MotionSkills:
         self.vision_key = None
         return None
 
-    def seek_junction(self, step, seen=None, row_exit=None):
+    def seek_junction(self, step, seen=None, row_exit=None, branch=None):
         target = step['target']
         side = step.get('side')
         region = step.get('region', [])
         area = side and (target == 'crossroad' or step.get('area'))
-        search_axis = step.get('search_axis')
+        search_axis = step.get('search_axis') if branch is None else None
         yaw = (self.direction(search_axis) if search_axis else
                self.direction(region[0]) if region else self.direction(side) if area else self.course)
         if seen is not None:
             yaw=self.course
+        if branch is not None:
+            yaw = branch.heading
         self.course = yaw
-        origin = self.here
+        origin = branch.point if branch is not None else self.here
         ordinal = step.get('ordinal', 1)
         counted, excluded, visited = [], [], []
         detours, tried = [], []
@@ -480,6 +482,11 @@ class MotionSkills:
                     continue
                 if any(math.dist(j.point, p) < .9 for p in counted+excluded):
                     continue
+                if branch is not None:
+                    along, across = components(origin, j.point, yaw)
+                    if abs(across) > .75 or along < 1.1 or (
+                            counted and components(counted[-1], j.point, yaw)[0] < .9):
+                        continue
                 if area and components(self.entrance, j.point, yaw)[0] < .4:
                     continue
                 crop = None
@@ -489,6 +496,12 @@ class MotionSkills:
                         continue
                 else:
                     directions = list(self.branches(j, yaw, None if area else side))
+                    if branch is not None and step.get('search_axis'):
+                        target_yaw = self.direction(step['search_axis'])
+                        if abs(math.sin(target_yaw-yaw)) > .7:
+                            directions = [a for a in directions if math.cos(a-target_yaw) > .7]
+                        elif not self.in_region(j.point, [step['search_axis']]):
+                            continue
                     if seen is not None:
                         directions = [a for a in directions if not any(
                             math.dist(j.point,f.point)<.95 and math.cos(a-f.heading)>.7 for f in seen)]
@@ -553,7 +566,7 @@ class MotionSkills:
                     tracker = JunctionTracker()
                     self.note(f'主通道尚未数够行口，回到已观测岔口 {gate} 检查侧道')
                 continue
-            if seen is None and (area or region or search_axis):
+            if seen is None and branch is None and (area or region or search_axis):
                 path = self.view.frontier_path(self.here, direction=yaw, visited=visited)
                 if path and len(path) > 3 and (not search_axis or
                         components(self.here, self.xy(path[-1]), yaw)[0] > .15):
@@ -683,6 +696,7 @@ class MotionSkills:
         inspected = []
         settled = []
         looked_from = []
+        surveyed = []
 
         def accepts(p):
             in_sector = direction is None or (math.dist(self.entrance[:2], p) > .45 and
@@ -761,7 +775,30 @@ class MotionSkills:
             # Observe other directions only when the current observed frontier does not advance.
             yaw = direction if direction is not None else self.course
             if failed_looks >= 4:
-                raise Unmet('可观测范围内尚未找到符合约束的目标')
+                if kind not in ('door', 'exit'):
+                    raise Unmet('可观测范围内尚未找到符合约束的目标')
+                surveyed.append(self.here)
+                alternative = self.view.survey_path(self.here, surveyed, direction)
+                if not alternative:
+                    raise Unmet(f'未核实目标门；当前可达地图已无新的边界或间隔足够的安全观察位，已检查 {len(surveyed)} 个位置记录')
+                station = self.xy(alternative[-1])
+                self.note(f'当前视角未确认门，沿已知通路换到观察位 {station}，允许折返')
+                moved = yield from self.drive_path(alternative, stop=lambda: verified() or pending_gate() or panel_hint())
+                if verified() or pending_gate() or panel_hint():
+                    continue
+                if not moved:
+                    surveyed.append(station)
+                    continue
+                surveyed.append(self.here)
+                for i in range(8):
+                    yield from self.look(yaw+i*math.pi/4)
+                    start, n = self.now, self.responses
+                    while self.now-start < 8. and self.responses-n < 2 and not verified() and not panel_hint():
+                        yield
+                    if verified() or pending_gate() or panel_hint():
+                        break
+                # Retry frontiers on the refreshed map before selecting another station.
+                continue
             yield from self.look(yaw+(0., math.pi/2, -math.pi/2, math.pi)[failed_looks])
             start, n = self.now, self.responses
             while self.now-start < 8. and self.responses-n < 2 and not verified() and not panel_hint():
@@ -991,7 +1028,7 @@ class MotionSkills:
                     self.feature = feature
                     if effect == 'turn':
                         yield from self.travel(feature.point)
-                        yield from self.run_skill({'do':'turn', 'side':rule['turn_side']}, None)
+                        yield from self.run_skill({'do':'turn', 'side':rule['turn_side']}, next_step)
                     return
                 if finished is not None:
                     # Give the last in-scope exposure time to finish; the car is stationary.
@@ -1034,13 +1071,18 @@ class MotionSkills:
         elif op == 'patrol_rows':
             yield from self.patrol_rows(step)
         elif op == 'seek':
+            branch = self.feature if self.feature and self.feature.kind == 'branch' else None
             self.feature = self.entered = self.loop_trace = None
             kind = step['target']
             if kind == 'crossroad' and row_exit is not None:
                 self.note(f'先复核刚到达的行末横道 {row_exit} 是否四向连通')
                 yield from self.seek_junction(step, row_exit=row_exit)
             elif kind in ('crossroad', 'opening', 'row'):
-                yield from self.seek_junction(step)
+                if branch is not None and kind == 'row':
+                    self.note(f'沿刚驶入的支路按经过顺序计数，路口 {branch.point}，入口方位约束 {step.get("search_axis")}')
+                    yield from self.seek_junction(step, branch=branch)
+                else:
+                    yield from self.seek_junction(step)
             else:
                 if kind == 'door' and next_step == 'exit':
                     kind = 'exit'
@@ -1071,6 +1113,11 @@ class MotionSkills:
         elif op == 'turn':
             self.course = self.direction(step['side'])
             yield from self.aim(self.course)
+            if self.feature and self.feature.kind == 'crossroad' and next_step == 'seek':
+                center = self.feature.point
+                yield from self.travel(offset(center, self.course, .95), straight=True)
+                self.feature = Feature('branch', center, self.course)
+                self.note(f'已从十字路口驶入支路，实测位置 {self.here}')
         elif op == 'advance':
             if step.get('side'):
                 self.course = self.direction(step['side'])

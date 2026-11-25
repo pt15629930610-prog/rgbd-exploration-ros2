@@ -197,7 +197,7 @@ class OnlineRouteReplayTest(unittest.TestCase):
             next(move)
         self.assertTrue(finished.exception.value)
 
-    def test_front_second_row_patrol_then_left_door(self):
+    def crop_and_door_robot(self):
         class SceneReplay(OnlineReplay):
             def camera(self):
                 if self.vision_key and self.vision_key[0] == 'crop':
@@ -212,6 +212,40 @@ class OnlineRouteReplayTest(unittest.TestCase):
                 super().camera()
         robot = SceneReplay()
         robot.speed_limit = 1.
+        return robot
+
+    def test_logged_second_row_turn_keeps_outgoing_aisle(self):
+        robot = self.crop_and_door_robot()
+        robot.exercise({'do':'turn','side':'left'})
+        second = {'do':'seek','target':'row','ordinal':2}
+        robot.exercise(second)
+        robot.exercise({'do':'enter'})
+        robot.exercise({'do':'traverse_row','watch':{
+            'target':'crossroad','ordinal':1,'effect':'turn','turn_side':'right'}}, 'seek')
+        center = robot.feature.point
+        self.assertLess(robot.here[1], center[1]-.65)
+        robot.exercise(dict(second, search_axis='front'))
+        gates = [point for msg,point in robot.events if '现场确认 row 第' in msg][-2:]
+        self.assertTrue(all(abs(point[0]-center[0]) < .75 for point in gates))
+        self.assertLess(gates[1][1], gates[0][1]-1.)
+        self.assertAlmostEqual(wrap(robot.feature.heading), 0., delta=.15)
+        robot.exercise({'do':'enter'})
+        robot.exercise({'do':'patrol'})
+        robot.exercise({'do':'seek','target':'door','side':'left'})
+        robot.exercise({'do':'approach','distance':1.})
+        self.assertAlmostEqual(math.dist(robot.here,(0.,11.)), 1., delta=.22)
+
+    def test_door_search_moves_on_fully_known_map(self):
+        robot = OnlineReplay()
+        robot.truth[:] = robot.grid[:] = 0
+        robot.speed_limit = .5
+        robot.crop_point = (.2, 0.)
+        robot.exercise({'do':'seek','target':'door','side':'front'})
+        self.assertTrue(any('换到观察位' in msg for msg,_ in robot.events))
+        self.assertEqual(robot.feature.point, robot.crop_point)
+
+    def test_front_second_row_patrol_then_left_door(self):
+        robot = self.crop_and_door_robot()
         robot.exercise({'do':'seek','target':'row','search_axis':'front','ordinal':2})
         gates = [point for msg,point in robot.events if '现场确认 row 第' in msg]
         self.assertEqual(len(gates), 2)

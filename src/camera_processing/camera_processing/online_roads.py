@@ -284,6 +284,29 @@ class RoadView:
                 if room_to_turn:
                     score += 12.*max(0., .85-self.clearance_map[cell])
                 candidates.append((score, cell))
-        if not candidates:
+        for _, goal in sorted(candidates):
+            path = astar(self.walk, start, goal, roomy=self.turning_room if room_to_turn else None)
+            if len(path) > 3:
+                return path
+        return []
+
+    def survey_path(self, point, surveyed, direction=None):
+        """Choose a new camera station in reachable known space, even on a complete map."""
+        start = self.cell(point)
+        walk = reachable_cells(self.walk, start)
+        rows, cols = np.nonzero(walk & (self.clearance_map >= .52))
+        if not rows.size:
             return []
-        return astar(self.walk, start, min(candidates)[1], roomy=self.turning_room if room_to_turn else None)
+        xs = self.origin[0]+(cols+.5)*self.resolution
+        ys = self.origin[1]+(rows+.5)*self.resolution
+        dx, dy = xs-point[0], ys-point[1]
+        eligible = np.hypot(dx,dy) >= 1.35
+        for x,y in surveyed:
+            eligible &= (xs-x)**2+(ys-y)**2 >= 1.35**2
+        if not eligible.any():
+            return []
+        cost = np.hypot(dx,dy) + 5.*np.maximum(0., .85-self.clearance_map[rows,cols])
+        if direction is not None:
+            cost -= .75*(dx*math.cos(direction)+dy*math.sin(direction))
+        i = np.argmin(np.where(eligible,cost,np.inf))
+        return astar(self.walk, start, (rows[i],cols[i]), roomy=self.turning_room)
