@@ -233,7 +233,7 @@ class OnlineRouteReplayTest(unittest.TestCase):
         robot.exercise({'do':'patrol'})
         robot.exercise({'do':'seek','target':'door','side':'left'})
         robot.exercise({'do':'approach','distance':1.})
-        self.assertAlmostEqual(math.dist(robot.here,(0.,11.)), 1., delta=.22)
+        self.assertAlmostEqual(math.dist(robot.here,(0.,11.)), 1., delta=.10)
 
     def test_door_search_moves_on_fully_known_map(self):
         robot = OnlineReplay()

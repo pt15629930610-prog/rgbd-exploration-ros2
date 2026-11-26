@@ -282,7 +282,7 @@ class MotionSkills:
             self.command()
             yield
 
-    def drive_path(self, path, stop=None):
+    def drive_path(self, path, stop=None, *, tolerance=.12):
         """Track one observed path; return false if new evidence invalidates it."""
         if not path:
             return False
@@ -292,7 +292,7 @@ class MotionSkills:
         revision = getattr(self, 'motion_revision', 0)
         tight_sites = []
         best = math.inf
-        while math.dist(self.here, goal) > .12:
+        while math.dist(self.here, goal) > tolerance:
             if stop and stop():
                 self.command()
                 return True
@@ -349,12 +349,14 @@ class MotionSkills:
             yield
         self.command()
         self.clear_path()
-        return math.dist(self.here, goal) <= .12
+        return math.dist(self.here, goal) <= tolerance
 
-    def travel(self, point, *, straight=False, explore=False):
+    def travel(self, point, *, straight=False, explore=False, precise=False):
         """Replan to a measured point. Extend a straight segment as its corridor becomes visible."""
         retries = 0
-        while math.dist(self.here, point) > .20:
+        # Stop within the final grid cell's quantization error plus tracking tolerance.
+        arrival = .06 + self.resolution / math.sqrt(2) if precise else .20
+        while math.dist(self.here, point) > arrival:
             dist = math.dist(self.here, point)
             yaw = bearing(self.here, point)
             if straight:
@@ -366,7 +368,8 @@ class MotionSkills:
                     frontier = self.view.frontier_path(self.here, target=point)
                     if frontier and math.dist(self.xy(frontier[-1]), point) < dist-.18:
                         path = frontier[:max(4, round(1.1/self.resolution))]
-            progress = yield from self.drive_path(path)
+            final_leg = path and self.view.cell(point) == path[-1]
+            progress = yield from self.drive_path(path, tolerance=.06 if precise and final_leg else .12)
             if progress and math.dist(self.here, point) < dist-.04:
                 retries = 0
             else:
@@ -1183,11 +1186,12 @@ class MotionSkills:
         elif op == 'approach':
             f = self.need(('door', 'exit', 'crop', 'object'))
             distance = step.get('distance', 1.)
+            near_door = f.kind == 'door' and distance < 4.5
             for _ in range(2):
                 point = offset(f.point, f.heading, -distance)
                 if not inside(self.grid, self.view.cell(point)):
                     raise Unmet('指定的停车点在当前地图边界外')
-                yield from self.travel(point, explore=True)
+                yield from self.travel(point, explore=True, precise=near_door)
                 yield from self.look(bearing(self.here, f.point))
                 if distance >= 4.5:
                     gap, lateral = components(self.here, f.point, f.heading)
@@ -1207,7 +1211,7 @@ class MotionSkills:
                 yaw = e.heading if e.heading is not None else bearing(self.here, e.point)
                 self.feature = f = Feature(f.kind, e.point, yaw)
                 gap, lateral = components(self.here, f.point, yaw)
-                if abs(gap-distance) <= .22 and abs(lateral) <= .25:
+                if abs(gap-distance) <= (.10 if near_door else .22) and abs(lateral) <= .25:
                     self.note(f'停车复核通过，实测距离 {gap:.2f} m，横向偏差 {lateral:.2f} m')
                     return
             raise Unmet('现场复核仍未满足指令中的停车距离')
