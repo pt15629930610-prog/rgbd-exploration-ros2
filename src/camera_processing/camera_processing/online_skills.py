@@ -455,6 +455,13 @@ class MotionSkills:
 
     def seek_junction(self, step, seen=None, row_exit=None, branch=None):
         target = step['target']
+        order = step.get('order')
+        rank_all = order in ('last', 'middle')
+        reference = None
+        if order == 'other':
+            reference = getattr(self, 'last_confirmed_row', None) or getattr(self, 'last_row', None)
+        if order == 'other' and reference is None:
+            raise Unmet('“另一条”需要一条已确认的作物行作为参照')
         side = step.get('side')
         region = step.get('region', [])
         area = side and (target == 'crossroad' or step.get('area'))
@@ -465,10 +472,14 @@ class MotionSkills:
             yaw=self.course
         if branch is not None:
             yaw = branch.heading
+        elif reference and reference.approach_yaw is not None and not (search_axis or side or region):
+            yaw = reference.approach_yaw
         self.course = yaw
         origin = branch.point if branch is not None else self.here
         ordinal = step.get('ordinal', 1)
         counted, excluded, visited = [], [], []
+        ordered_rows = []
+        reversed_search = False
         detours, tried = [], []
         tracker = JunctionTracker()
         while True:
@@ -485,9 +496,9 @@ class MotionSkills:
                     continue
                 if any(math.dist(j.point, p) < .9 for p in counted+excluded):
                     continue
-                if branch is not None:
+                if branch is not None or order:
                     along, across = components(origin, j.point, yaw)
-                    if abs(across) > .75 or along < 1.1 or (
+                    if abs(across) > .75 or along < (1.1 if branch is not None else .55) or (
                             counted and components(counted[-1], j.point, yaw)[0] < .9):
                         continue
                 if area and components(self.entrance, j.point, yaw)[0] < .4:
@@ -499,6 +510,14 @@ class MotionSkills:
                         continue
                 else:
                     directions = list(self.branches(j, yaw, None if area else side))
+                    if reference is not None and math.dist(reference.point, j.point) < .95:
+                        continue
+                    if reference is not None:
+                        # Exclude re-entry at the opposite mouth of the same observed aisle.
+                        distance, lateral = components(reference.point, j.point, reference.heading)
+                        if (distance > 0 and abs(lateral) < .65 and
+                                self.view.clearance(reference.point, reference.heading, distance) >= distance-.15):
+                            directions = [a for a in directions if math.cos(a-reference.heading) > -.8]
                     if branch is not None and step.get('search_axis'):
                         target_yaw = self.direction(step['search_axis'])
                         if abs(math.sin(target_yaw-yaw)) > .7:
@@ -533,7 +552,11 @@ class MotionSkills:
                             refreshed = self.view.junctions(self.here, yaw)
                             if not any(math.dist(k.point, j.point) < .85 and side_name in k.crop_sides
                                        for k in refreshed):
-                                continue
+                                # A terminal side lane can lose its junction signature once
+                                # the camera faces into it. Recheck the measured branch itself;
+                                # still require a clear lane and two agreeing crop observations.
+                                if not (rank_all and self.view.clearance(j.point, angle, 2.) >= 1.8):
+                                    continue
                             verified_lane = True
                             crop = yield from self.confirm_row(j.point, angle, step.get('label', ''))
                             if crop:
@@ -548,14 +571,40 @@ class MotionSkills:
                             raise Unmet('发现疑似行口，但两帧 RGB-D 尚未核实通道旁的作物')
                 counted.append(j.point)
                 self.note(f'现场确认 {target} 第 {len(counted)} 处，位于 {j.point}')
-                if len(counted) == ordinal:
+                found = Feature(target, j.point, angle, crop, approach_yaw=yaw)
+                if rank_all:
+                    ordered_rows.append(found)
+                elif len(counted) == ordinal:
                     yield from self.travel(j.point)
-                    self.feature = Feature(target, j.point, angle, crop, approach_yaw=yaw)
+                    self.feature = found
+                    if target == 'row':
+                        self.last_confirmed_row = found
                     return
             yield from self.aim(yaw)
             path = self.view.advance(self.here, yaw, .72)
             if (yield from self.drive_path(path)):
                 continue
+            if rank_all:
+                yield from self.look(yaw)
+                if not self.view.observed_dead_end(self.here, yaw, banks=False):
+                    raise Unmet('当前无法继续沿通道前进，尚未观测到尽头，无法判断最后或中间的行口')
+                if not ordered_rows:
+                    raise SearchExhausted('直到通道尽头仍未确认符合条件的行口')
+                # In an even set use the first of the two central entrances.
+                index = len(ordered_rows)-1 if order == 'last' else (len(ordered_rows)-1)//2
+                selected = ordered_rows[index]
+                self.note(f'实测通道结束，共确认 {len(ordered_rows)} 个行口；返回第 {index+1} 处 {selected.point}')
+                yield from self.travel(selected.point)
+                self.feature = self.last_confirmed_row = selected
+                return
+            if order == 'other' and not branch and not reversed_search and not (search_axis or region or side):
+                yield from self.travel(origin)
+                yaw = self.course = wrap(yaw+math.pi)
+                tracker = JunctionTracker()
+                reversed_search = True
+                continue
+            if order:
+                raise SearchExhausted('这条通道上未能确认符合位置约束的作物行')
             if search_axis and detours:
                 # Explore observed side aisles from the far end of the selected
                 # direction when the main road has yielded too few crop gates.
@@ -824,6 +873,7 @@ class MotionSkills:
         yield from self.travel(offset(f.point, f.heading, .9), straight=True)
         if f.kind == 'row':
             self.entered = f
+            self.last_confirmed_row = f
             if getattr(self, 'last_row', None) is not f:
                 self.last_row = f
                 self.row_laps = 0

@@ -11,6 +11,21 @@ def compile_items(text, *items):
 
 
 class LanguageTests(unittest.TestCase):
+    def test_relative_row_survives_logged_model_split(self):
+        q = '到对面最后一条作物行去巡检'
+        steps = compile_items(q, {'原文':q[:-3],'动作':'行驶'},
+                              {'原文':'去巡检','动作':'巡检'})
+        self.assertEqual(steps, [{'do':'seek','target':'row','search_axis':'front','order':'last'},
+                                 {'do':'enter'}, {'do':'patrol'}])
+        for noun, order in [('最开始的那条','first'),('中间那条','middle'),('另外一条','other')]:
+            q = '到'+noun+'草莓作物行巡两趟'
+            steps = compile_items(q, {'原文':q,'动作':'巡检'})
+            self.assertEqual((steps[0]['order'],steps[0]['label'],steps[-1]['count']), (order,'草莓',2))
+        q = '换另一个巡检'
+        steps = compile_items(q, {'原文':q,'动作':'巡检'})
+        self.assertEqual(steps, [{'do':'seek','target':'row','order':'other'},
+                                 {'do':'enter'}, {'do':'patrol'}])
+
     def test_scoped_observation_and_recovery_preserve_followup(self):
         from camera_processing.stage_language import PARTS
         main = '以0.3米/秒沿左边第一条草莓行巡一趟'

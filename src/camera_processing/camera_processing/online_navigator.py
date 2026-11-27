@@ -33,7 +33,7 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
         self.phase = 'idle'
         self.program = self.pending = self.entrance = None
         self.feature = self.entered = self.loop_trace = self.portal = None
-        self.last_row = None
+        self.last_confirmed_row = self.last_row = None
         self.row_laps = 0
         self.vision_key = None
         self.responses = 0
@@ -85,7 +85,7 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
         previous = self.pose
         if stamp < self.stamps['odom']-.5:
             self.stop()
-            self.entrance = self.feature = self.last_row = None
+            self.entrance = self.feature = self.last_confirmed_row = self.last_row = None
             self.entered = self.loop_trace = None
             if hasattr(self, 'approach_track'):
                 self.approach_track.clear()
@@ -101,7 +101,7 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
         self.vision.pose(stamp, self.pose)
         if previous is not None and math.dist(previous[:2], self.here) > .65:
             self.stop()
-            self.feature = self.last_row = None
+            self.feature = self.last_confirmed_row = self.last_row = None
             self.approach_track.clear()
             self.note('位姿出现跳变，任务已停止，先核对定位', 'Stopped: odometry jumped.')
             return

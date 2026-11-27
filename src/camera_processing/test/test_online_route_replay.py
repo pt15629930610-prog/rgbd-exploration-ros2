@@ -235,6 +235,35 @@ class OnlineRouteReplayTest(unittest.TestCase):
         robot.exercise({'do':'approach','distance':1.})
         self.assertAlmostEqual(math.dist(robot.here,(0.,11.)), 1., delta=.10)
 
+    def test_relative_rows_on_measured_aisle(self):
+        for order in ('last','middle','first'):
+            with self.subTest(order=order):
+                robot = self.crop_and_door_robot()
+                robot.exercise({'do':'turn','side':'left'})
+                robot.exercise({'do':'seek','target':'row','order':order})
+                gates = [p for msg,p in robot.events if '现场确认 row 第' in msg]
+                if order == 'first':
+                    self.assertEqual(len(gates), 1)
+                    robot.exercise({'do':'seek','target':'row','order':'other'})
+                    self.assertGreater(math.dist(robot.feature.point,gates[0]), 1.)
+                else:
+                    self.assertGreaterEqual(len(gates), 2)
+                    idx = -1 if order=='last' else (len(gates)-1)//2
+                    self.assertLess(math.dist(robot.here,gates[idx]), .4)
+
+    def test_logged_left_turn_last_row_then_left_door(self):
+        robot = self.crop_and_door_robot()
+        route = [{'do':'turn','side':'left'}, {'do':'seek','target':'row','ordinal':2},
+                 {'do':'enter'}, {'do':'traverse_row'}, {'do':'seek','target':'crossroad'},
+                 {'do':'turn','side':'left'},
+                 {'do':'seek','target':'row','search_axis':'front','order':'last'},
+                 {'do':'enter'}, {'do':'patrol'}, {'do':'seek','target':'door','side':'left'},
+                 {'do':'approach','distance':1.}]
+        for i, step in enumerate(route):
+            robot.exercise(step, route[i+1]['do'] if i+1 < len(route) else None)
+        self.assertTrue(any('实测通道结束' in msg for msg,_ in robot.events))
+        self.assertAlmostEqual(math.dist(robot.here,(0.,11.)), 1., delta=.10)
+
     def test_door_search_moves_on_fully_known_map(self):
         robot = OnlineReplay()
         robot.truth[:] = robot.grid[:] = 0

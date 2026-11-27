@@ -282,6 +282,26 @@ def expand(item, slots):
 ROW_RETURN = re.compile(r'(?:如果|要是|若|如果发现)?(?:走不通|前方不通|遇到封堵|遇到死胡同|前方被堵)(?:时|了)?(?:就|则)?(?:沿原路|原路)?(?:退回|返回|回到|退到)(?:来|去|作物行入口|本行行口|行口|该行入口)')
 PATROL = re.compile(r'巡(?:检|查|视|一趟|一遍)|沿(?:这|该)行看看')
 
+# Require an actual row noun (or its classifier shorthand), so “最后去左门”
+# and “最开始左拐” retain their temporal meaning.
+ROW_ORDER = re.compile(
+    r'(?P<first>最开始|最初|起始|头一)|(?P<last>最后|最末|末尾)|'
+    r'(?P<middle>正中间|中间|居中)|(?P<other>另外|另一|另)'
+)
+ROW_NOUN = re.compile(r'的?(?:那|这)?(?:一|第[一1])?(?:条|排|个)?的?'
+                      r'(?:草莓|生菜|盆栽|番茄|黄瓜|香草)?(?:作物行|行作物|种植行|行间道|行)')
+
+
+ROW_SHORT = re.compile(r'的?(?:那|这)?一?[条排](?=$|[，,。；;]|去?巡|进去|进入|穿过)')
+OTHER_SHORT = re.compile(r'个(?=(?:去|进去)?巡)')
+
+
+def row_orders(text):
+    return [m.lastgroup for m in ROW_ORDER.finditer(text)
+            if ROW_NOUN.match(text, m.end()) or
+            ROW_SHORT.match(text, m.end()) or
+            (m.lastgroup == 'other' and OTHER_SHORT.match(text, m.end()))]
+
 
 def row_steps(item, slots, previous):
     quote = item['原文']
@@ -387,6 +407,28 @@ def compile_semantics(answer, instruction, diagnostics=None, prior=()):
                 if item['动作'] not in ('询问','未支持','绕行'):
                     item = dict(item, 动作='巡检', 目标='作物行')
             slots = measurements(quote)
+            orders = row_orders(quote)
+            if (result and result[-1].get('order')
+                    and re.fullmatch(r'(?:再|去|进去|进入)?巡(?:检|查|视)?(?:'+NUMBER+r'(?:圈|趟|遍|次))?', quote)):
+                item = dict(item, 动作='巡检', 目标='作物行')
+            if orders:
+                if len(orders) != 1 or (slots.get('ordinal') and
+                                        not (orders == ['first'] and slots['ordinal'] == 1)):
+                    raise ValueError('同一作物行有多个位置限定，请明确顺序')
+                if not CONDITION.search(quote):
+                    for marker in ROW_ORDER.finditer(quote):
+                        shorthand = (ROW_SHORT.match(quote, marker.end()) or
+                                     OTHER_SHORT.match(quote, marker.end()))
+                        if shorthand and not ROW_NOUN.match(quote, marker.end()):
+                            end = shorthand.end()
+                            quote = quote[:end]+'作物行'+quote[end:]
+                            break
+                    verb = item['动作']
+                    if re.search('巡', quote):
+                        verb = '巡检'
+                    elif not re.search(r'进入|进去|穿过|绕|停|拍|观察', quote):
+                        verb = '寻找'
+                    item = dict(item, 原文=quote, 动作=verb, 目标='作物行')
             if ('seconds' in slots and item['动作'] in ('等待', '寻找')
                     and re.search(r'去|到|靠近|门前|门口', quote)
                     and any(re.search(pattern, quote) for pattern in LANDMARKS.values())):
@@ -396,6 +438,12 @@ def compile_semantics(answer, instruction, diagnostics=None, prior=()):
                 steps = [{'do': 'speed'}]
             else:
                 steps = row_steps(item, slots, [*prior, *result])
+            if orders:
+                selection = next((s for s in steps if s.get('do') == 'seek'
+                                  and s.get('target') == 'row'), None)
+                if selection is None:
+                    raise ValueError('未能将相对位置绑定到作物行')
+                selection['order'] = orders[0]
             if not steps:
                 if diagnostics is not None:
                     diagnostics.append(f'{quote} → 沿用上一阶段确认的作物行及其退回条件')
@@ -496,6 +544,15 @@ def interpret_span(server, instruction, diagnostics, prior=()):
 def interpret_online(server, instruction, diagnostics=None):
     if not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 600:
         raise ValueError('请输入 1～600 字的路线指令')
+    steps = _interpret_online(server, instruction, diagnostics)
+    orders = row_orders(instruction)
+    if orders and ([s['order'] for s in steps if 'order' in s] != orders
+                   or any(s['do'] == 'unsupported' and s.get('dependent', True) for s in steps)):
+        raise ValueError('作物行的位置或后续动作未能完整绑定，请明确要巡检哪条行')
+    return steps
+
+
+def _interpret_online(server, instruction, diagnostics):
     from .stage_language import scoped_plan
     plan = scoped_plan(server, instruction, diagnostics)
     if plan is not None:
