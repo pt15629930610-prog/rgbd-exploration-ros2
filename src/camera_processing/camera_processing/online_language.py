@@ -303,6 +303,14 @@ def row_orders(text):
             (m.lastgroup == 'other' and OTHER_SHORT.match(text, m.end()))]
 
 
+# Keep the two motion predicates separate even when spoken without a pause.
+TURN_WORD = r'(?:往|向)?[左右](?:转弯|拐弯|转|拐)'
+CROSS_ROW = r'(?:穿过|穿越|穿行)(?:(?!路口|门|左拐|右拐)[^，,。；;]){0,24}?(?:行作物|作物行|种植行|种植槽)'
+JOIN = r'[，, ]*(?:之后|以后|后)?(?:然后|接着|随后|再)?'
+COMPOUND_ROW = re.compile(r'(?P<first>'+TURN_WORD+r')'+JOIN+r'(?='+CROSS_ROW+r')|'
+                          r'(?P<row>'+CROSS_ROW+r')'+JOIN+r'(?='+TURN_WORD+r')')
+
+
 def row_steps(item, slots, previous):
     quote = item['原文']
     neighbor = re.search(r'隔壁|相邻|紧挨着', quote)
@@ -397,6 +405,8 @@ def compile_semantics(answer, instruction, diagnostics=None, prior=()):
             raise ValueError('模型忽略或改写了原话，请重新拆解并逐字引用')
         gap = original[cursor:start]
         cursor = start + len(quote)
+        if not CONDITION.search(quote) and COMPOUND_ROW.search(quote):
+            raise ValueError('转向和穿行各需一个动作。按原文先后拆成“转向”和“穿过”，方位只绑定到对应动作')
         try:
             # “行作物” is a spoken inversion of “作物行”. Keep the original span for audit.
             quote = quote.replace('行作物', '作物行')
@@ -426,7 +436,7 @@ def compile_semantics(answer, instruction, diagnostics=None, prior=()):
                     verb = item['动作']
                     if re.search('巡', quote):
                         verb = '巡检'
-                    elif not re.search(r'进入|进去|穿过|绕|停|拍|观察', quote):
+                    elif not re.search(r'进入|进去|穿过|穿越|穿行|绕|停|拍|观察', quote):
                         verb = '寻找'
                     item = dict(item, 原文=quote, 动作=verb, 目标='作物行')
             if ('seconds' in slots and item['动作'] in ('等待', '寻找')
@@ -469,6 +479,14 @@ def compile_semantics(answer, instruction, diagnostics=None, prior=()):
         result.extend(steps)
     if _significant(original[cursor:]):
         raise ValueError('模型遗漏了指令结尾：' + original[cursor:])
+    if COMPOUND_ROW.search(instruction) and not CONDITION.search(instruction):
+        expected = [('turn', 'left' if '左' in m[0] else 'right') if m.lastgroup == 'turn'
+                    else ('traverse_row', None) for m in re.finditer(
+                        r'(?P<turn>'+TURN_WORD+r')|(?P<cross>'+CROSS_ROW+r')', instruction)]
+        actual = [(step['do'], step.get('side')) for step in result
+                  if step['do'] in ('turn', 'traverse_row')]
+        if expected != actual:
+            raise ValueError('转向和穿行的执行顺序或方位与原文不一致，请逐个拆解')
     if (len(result)>1 and result[0]=={'do':'advance','distance':1.}
             and re.fullmatch(r'先?(?:直走|直行|向前直行|往前直走)',_compact(items[0]['原文']))
             and result[1].get('do')=='seek' and result[1].get('target') in ('crossroad','opening')):
@@ -531,7 +549,8 @@ def interpret_span(server, instruction, diagnostics, prior=()):
                 raise
             prompt = PROMPT + '\n上次输出校验失败，请修正：' + str(exc)
             # A short isolated request can be copied exactly by the response grammar.
-            if len(instruction) <= 24 and not re.search(r'[,，。；;、再后并又顺]|接着|同时|末了|随后', instruction):
+            if (len(instruction) <= 24 and not COMPOUND_ROW.search(instruction)
+                    and not re.search(r'[,，。；;、再后并又顺]|接着|同时|末了|随后', instruction)):
                 item = dict(ITEM, properties={**FIELDS, '原文': {'enum': [instruction]}})
                 schema = dict(SCHEMA, properties={'动作序列': {'type': 'array', 'items': item,
                                                            'minItems': 1, 'maxItems': 1}})
@@ -605,7 +624,10 @@ def _interpret_online(server, instruction, diagnostics):
     except ValueError:
         # A missing or invented quote invalidates the whole plan. Retry independent
         # clauses individually, without separating a condition from its consequence.
-        parts = [s.strip() for s in re.split(r'[。；;]|[，,]\s*(?=再|回|先|最后|末了)|[，,]?\s*(?:然后|接着|随后)', instruction) if s.strip()]
+        # If both model attempts merge two explicit motions, submit the original
+        # spans independently. Keep each landmark and its modifiers together.
+        separated = COMPOUND_ROW.sub(lambda m: (m['first'] or m['row'])+'；', instruction)
+        parts = [s.strip() for s in re.split(r'[。；;]|[，,]\s*(?=再|回|先|最后|末了)|[，,]?\s*(?:然后|接着|随后)', separated) if s.strip()]
         if not 2 <= len(parts) <= 8 or CONDITION.search(instruction):
             raise
         steps = []

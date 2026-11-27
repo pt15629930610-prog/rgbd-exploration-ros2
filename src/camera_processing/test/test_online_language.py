@@ -11,6 +11,19 @@ def compile_items(text, *items):
 
 
 class LanguageTests(unittest.TestCase):
+    def test_retry_logged_merged_turn_and_traverse(self):
+        for text, expected in [('先右拐穿过最后一条行作物', ['turn','seek','enter','traverse_row']),
+                               ('穿过最后一条行作物再右拐', ['seek','enter','traverse_row','turn'])]:
+            def ask(server, prompt, quote, schema, tokens):
+                verb = '转向' if '拐' in quote else '穿过'
+                return {'动作序列':[{'原文':quote, '动作':verb, '方位':'右', '目标':'作物行'}
+                                if quote == text else {'原文':quote, '动作':verb}]}
+            with patch('camera_processing.online_language.ask', side_effect=ask) as model:
+                plan = interpret_online('unused', text)
+            self.assertIn('各需一个动作', model.call_args_list[1].args[1])
+            self.assertEqual([s['do'] for s in plan], expected)
+            self.assertEqual(next(s['order'] for s in plan if 'order' in s), 'last')
+
     def test_junction_response_before_unmarked_destination(self):
         main = '1米/秒的速度行驶，先右拐穿过最后一条行作物'
         cond = '一遇到十字路口就左拐'
