@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import numpy as np
 from camera_processing.online_navigator import OnlineNavigator
-from camera_processing.online_skills import Unmet
+from camera_processing.online_skills import RouteHistory, Unmet
 
 
 class ExecutionTests(unittest.TestCase):
@@ -73,6 +73,7 @@ class ExecutionTests(unittest.TestCase):
         node.here = (0., 0.)
         node.now = 12.
         node.vision = Mock()
+        node.route_history = RouteHistory()
         node.speed_limit = .16
         node.skipped = []
         node.run_skill.side_effect = lambda step, following: iter(())

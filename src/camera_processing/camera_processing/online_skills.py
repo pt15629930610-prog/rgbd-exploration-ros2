@@ -25,6 +25,43 @@ def bearing(start, end):
     return math.atan2(end[1]-start[1], end[0]-start[0])
 
 
+class RouteHistory:
+    """Measured odometry polyline with arc-length addresses for recovery nodes."""
+
+    def __init__(self):
+        self.track = deque(maxlen=6000)
+        self.nodes = deque(maxlen=256)
+        self.stage_start = 0.
+
+    def observe(self, point):
+        if not self.track:
+            self.track.append((0., point))
+            self.nodes.append((0., point))
+            return
+        arc, last = self.track[-1]
+        distance = math.dist(last, point)
+        if distance >= .08:
+            self.track.append((arc+distance, point))
+
+    def begin(self):
+        if self.track:
+            self.stage_start = self.track[-1][0]
+
+    def checkpoint(self):
+        if not self.track or self.track[-1][0]-self.stage_start < .8:
+            return
+        mid = (self.stage_start+self.track[-1][0])/2
+        if mid < self.track[0][0]:
+            return
+        node = min(self.track, key=lambda entry: abs(entry[0]-mid))
+        if not self.nodes or node[0] > self.nodes[-1][0]+.3:
+            self.nodes.append(node)
+
+    def candidates(self, here):
+        return [node for node in reversed(self.nodes) if node[0] >= self.track[0][0]
+                and math.dist(node[1], here) >= .45] if self.track else []
+
+
 class Unmet(RuntimeError):
     """A requested action could not be verified from the live observations."""
 
@@ -176,7 +213,7 @@ class MotionSkills:
         return all(self.view.footprint_clear(self.here,self.pose[2]+error*i/n,known=True)
                    for i in range(n+1))
 
-    def retrace_to_room(self, history, margin):
+    def retrace_to_room(self, history, margin, *, goal=None):
         """Follow the recent driven polyline in short verified steps, including bends."""
         near = [i for i,p in enumerate(history) if math.dist(self.here,p) <= .20]
         if not near:
@@ -192,7 +229,10 @@ class MotionSkills:
                 break
             points.append(p)
             last = p
-        self.note(f'直线换位未成功，沿近期车迹分段找宽处，可检查 {len(points)} 段')
+        if goal is not None and math.dist(last, goal) > .075 and math.dist(last, goal) <= .45:
+            points.append(goal)
+        if goal is None:
+            self.note(f'直线换位未成功，沿近期车迹分段找宽处，可检查 {len(points)} 段')
         for target in points:
             start = self.now
             while math.dist(self.here,target) > .075:
@@ -229,7 +269,9 @@ class MotionSkills:
                 self.command(sign*min(.07,self.speed_limit), max(-.18,min(.18,.9*error)))
                 yield
             cell = self.cell()
-            if (inside(self.walk,cell) and self.walk[cell] and self.view.clearance_map[cell] >= margin):
+            reached = (math.dist(self.here,goal) <= .12 if goal is not None else
+                       inside(self.walk,cell) and self.walk[cell] and self.view.clearance_map[cell] >= margin)
+            if reached:
                 self.command()
                 self.note(f'沿车迹到达换向点 {self.here}，继续原任务')
                 return True
@@ -351,32 +393,68 @@ class MotionSkills:
         self.clear_path()
         return math.dist(self.here, goal) <= tolerance
 
+    def recover_at_node(self, history, nodes, goal):
+        for arc, node in nodes:
+            self.command()
+            self.clear_path()
+            self.note(f'前往 {goal} 受阻，尝试退回实测节点 {node}')
+            try:
+                arrived = yield from self.drive_path(self.view.path_to(self.here, node))
+            except Unmet:
+                self.command()
+                arrived = False
+            if not arrived:
+                trail = [p for distance,p in history.track if distance >= arc]
+                if not trail or trail[0] != node or not (
+                        yield from self.retrace_to_room(trail, 0., goal=node)):
+                    continue
+            self.command()
+            settled = self.stamps['global']
+            while self.stamps['global'] <= settled:
+                yield
+            self.note(f'已回到节点 {node}，按最新全局 OCC 重规划至 {goal}')
+            return True
+        return False
+
     def travel(self, point, *, straight=False, explore=False, precise=False):
         """Replan to a measured point. Extend a straight segment as its corridor becomes visible."""
         retries = 0
+        nodes = None
         # Stop within the final grid cell's quantization error plus tracking tolerance.
         arrival = .06 + self.resolution / math.sqrt(2) if precise else .20
         while math.dist(self.here, point) > arrival:
             dist = math.dist(self.here, point)
             yaw = bearing(self.here, point)
-            if straight:
-                yield from self.look(yaw)
-                path = self.view.advance(self.here, yaw, min(1.1, dist))
-            else:
-                path = self.view.path_to(self.here, point)
-                if not path and explore:
-                    frontier = self.view.frontier_path(self.here, target=point)
-                    if frontier and math.dist(self.xy(frontier[-1]), point) < dist-.18:
-                        path = frontier[:max(4, round(1.1/self.resolution))]
-            final_leg = path and self.view.cell(point) == path[-1]
-            progress = yield from self.drive_path(path, tolerance=.06 if precise and final_leg else .12)
+            try:
+                if straight:
+                    yield from self.look(yaw)
+                    path = self.view.advance(self.here, yaw, min(1.1, dist))
+                else:
+                    if retries:
+                        yield from self.look(yaw)
+                    path = self.view.path_to(self.here, point)
+                    if not path and explore:
+                        frontier = self.view.frontier_path(self.here, target=point)
+                        if frontier and math.dist(self.xy(frontier[-1]), point) < dist-.18:
+                            path = frontier[:max(4, round(1.1/self.resolution))]
+                final_leg = path and self.view.cell(point) == path[-1]
+                progress = yield from self.drive_path(path, tolerance=.06 if precise and final_leg else .12)
+            except Unmet as exc:
+                self.command()
+                self.note(f'当前路径无法跟踪：{exc}')
+                retries, progress = 2, False
             if progress and math.dist(self.here, point) < dist-.04:
                 retries = 0
             else:
                 retries += 1
                 if retries >= 3:
-                    raise Unmet('已观测区域中没有通往当前目标的安全路线')
-                yield from self.look(yaw)
+                    history = getattr(self, 'route_history', None)
+                    if history is not None and nodes is None:
+                        history.checkpoint()
+                        nodes = iter(history.candidates(self.here))
+                    if not (yield from self.recover_at_node(history, nodes or (), point)):
+                        raise Unmet('当前目标无安全路线，可用回退节点已检查')
+                    retries = 0
 
     def probe(self, travel_yaw, tracker, *, force=False):
         """Merge candidate observations across fresh maps and short, targeted side looks."""

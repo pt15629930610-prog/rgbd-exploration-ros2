@@ -64,8 +64,6 @@ def generate_launch_description():
         condition=LaunchConfigurationNotEquals('world', 'two_rooms.sdf'),
         output='screen',
     )
-    cloud_view = Node(package='camera_processing', executable='open3d_viewer', output='screen',
-                      parameters=[{'use_sim_time': True}])
     occupancy = OpaqueFunction(function=launch_occupancy_maps, args=[pose_feedback])
     explorer = Node(
         package='camera_processing',
@@ -85,7 +83,7 @@ def generate_launch_description():
                               choices=['two_rooms.sdf', 'four_doors.sdf', 'greenhouse_routes.sdf']),
         DeclareLaunchArgument('explore', default_value='false',
                               description='Enable autonomous frontier exploration'),
-        simulator, bridge, rgb_bridge, perception, cloud_view, occupancy, explorer,
+        simulator, bridge, rgb_bridge, perception, occupancy, explorer,
         GroupAction(condition=LaunchConfigurationEquals('world', 'greenhouse_routes.sdf'),
                     actions=[Node(package='camera_processing', executable='online_navigator',
                                   name='greenhouse_online_navigator', output='screen',

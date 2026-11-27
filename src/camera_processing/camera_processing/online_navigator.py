@@ -18,7 +18,7 @@ from .frontier_explorer import FrontierExplorer, seconds
 from .frontier_planner import obstacle_distance
 from .online_language import interpret_online
 from .online_roads import RoadView
-from .online_skills import MotionSkills, Unmet, crossed_threshold
+from .online_skills import MotionSkills, RouteHistory, Unmet, crossed_threshold
 from .online_vision import LiveVision
 
 
@@ -41,6 +41,7 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
         self.clearance_recovery = None
         self.motion_revision = 0
         self.recovery_sites = []
+        self.route_history = RouteHistory()
         self.last_image_log = -math.inf
         self.journal = None
         try:
@@ -85,6 +86,7 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
         previous = self.pose
         if stamp < self.stamps['odom']-.5:
             self.stop()
+            self.route_history = RouteHistory()
             self.entrance = self.feature = self.last_confirmed_row = self.last_row = None
             self.entered = self.loop_trace = None
             if hasattr(self, 'approach_track'):
@@ -101,11 +103,13 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
         self.vision.pose(stamp, self.pose)
         if previous is not None and math.dist(previous[:2], self.here) > .65:
             self.stop()
+            self.route_history = RouteHistory()
             self.feature = self.last_confirmed_row = self.last_row = None
             self.approach_track.clear()
             self.note('位姿出现跳变，任务已停止，先核对定位', 'Stopped: odometry jumped.')
             return
         self.remember_position()
+        self.route_history.observe(self.here)
         if self.portal and previous is not None and crossed_threshold(self.portal, previous, self.here):
             self.crossed = True
         if self.loop_trace is not None:
@@ -174,7 +178,11 @@ class OnlineNavigator(MotionSkills, FrontierExplorer):
             self.note(f'开始第 {i+1}/{len(steps)} 步 {step}，速度上限 {self.speed_limit:.2f} m/s',
                       f'Online {i+1}/{len(steps)}: {step["do"]}')
             following = steps[i+1]['do'] if i+1 < len(steps) else None
-            yield from self.run_skill(step, following)
+            self.route_history.begin()
+            try:
+                yield from self.run_skill(step, following)
+            finally:
+                self.route_history.checkpoint()
             self.command()
             self.clear_path()
             self.vision_key = None
