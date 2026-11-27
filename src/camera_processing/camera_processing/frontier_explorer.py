@@ -13,6 +13,7 @@ from rclpy.signals import SignalHandlerOptions
 from std_msgs.msg import String
 
 from .frontier_planner import (
+    CLEARANCE_M,
     choose_path, clear_segment, frontiers, inside, obstacle_distance,
     observation_path, reachable_cells, traversable,
 )
@@ -27,6 +28,7 @@ def wrap(angle):
 
 
 class FrontierExplorer(Node):
+    planning_clearance = CLEARANCE_M
     def __init__(self):
         super().__init__('frontier_explorer')
         source = FilePath(__file__).resolve()
@@ -68,7 +70,7 @@ class FrontierExplorer(Node):
         self.resolution = info.resolution
         self.origin = info.origin.position
         start = self.cell() if self.pose is not None else None
-        self.walk = traversable(grid, self.resolution, start)
+        self.walk = traversable(grid, self.resolution, start, clearance=self.planning_clearance)
         self.grid = grid
         self.frontier = frontiers(grid)
         self.stamps['global'] = seconds(msg.header)

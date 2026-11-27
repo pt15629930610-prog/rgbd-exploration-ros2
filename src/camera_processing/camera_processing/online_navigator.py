@@ -23,6 +23,9 @@ from .online_vision import LiveVision
 
 
 class OnlineNavigator(MotionSkills, FrontierExplorer):
+    planning_clearance = .50
+    slow_turn_clearance = .46
+
     def __init__(self):
         super().__init__()
         self.server = self.declare_parameter('vlm_server', 'http://127.0.0.1:18080').value

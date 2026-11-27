@@ -201,13 +201,14 @@ class MotionSkills:
 
     def slow_turn_clear(self, error):
         cell = self.cell()
-        if (not inside(self.walk,cell) or self.view.clearance_map[cell] < .48
+        margin = getattr(self, 'slow_turn_clearance', .48)
+        if (not inside(self.walk,cell) or self.view.clearance_map[cell] < margin
                 or getattr(self, 'turn_blocked', False)):
             return False
         hits = getattr(self, 'local_hits', None)
         if hits is not None:
             x,y,res = hits
-            if ((x*x+y*y) < (.48+.71*res)**2).any():
+            if ((x*x+y*y) < (margin+.71*res)**2).any():
                 return False
         n = max(1, math.ceil(abs(error)/.09))
         return all(self.view.footprint_clear(self.here,self.pose[2]+error*i/n,known=True)

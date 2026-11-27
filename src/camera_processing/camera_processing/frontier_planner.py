@@ -32,7 +32,7 @@ def traversable(grid, resolution, start=None, *, clearance=CLEARANCE_M):
     # cardinal free neighbour; keep the footprint clearance even at startup.
     if start is not None and inside(walk, start) and not walk[start] and grid[start] == 0:
         y, x = start
-        if CLEARANCE_M - resolution >= 0.45:
+        if clearance - resolution >= 0.45:
             walk[start] = any(inside(walk, (y+dy, x+dx)) and walk[y+dy, x+dx]
                               for dy, dx in CARDINAL)
     return walk
