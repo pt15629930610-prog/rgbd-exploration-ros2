@@ -11,6 +11,26 @@ def compile_items(text, *items):
 
 
 class LanguageTests(unittest.TestCase):
+    def test_junction_response_before_unmarked_destination(self):
+        main = '1米/秒的速度行驶，先右拐穿过最后一条行作物'
+        cond = '一遇到十字路口就左拐'
+        row = '到对面中间那条行作物去巡一圈'
+        door = '然后在左门前一米停下'
+        text = '，'.join((main, cond, row, door))
+        def ask(server, prompt, quote, schema, tokens):
+            if quote == text:
+                return {}
+            clauses = {main: [('1米/秒的速度行驶','调速'), ('先右拐','转向'),
+                              ('穿过最后一条行作物','穿过')],
+                       row+'，'+door: [(row,'巡检'), (door,'靠近')]}
+            return {'动作序列':[{'原文':q,'动作':v} for q,v in clauses[quote]]}
+        with patch('camera_processing.online_language.ask', side_effect=ask):
+            plan = interpret_online('unused', text)
+        self.assertEqual(next(s['watch'] for s in plan if 'watch' in s),
+                         dict(effect='turn',target='crossroad',turn_side='left'))
+        self.assertEqual([s['order'] for s in plan if 'order' in s], ['last','middle'])
+        self.assertEqual(plan[-1]['distance'], 1.)
+
     def test_relative_row_survives_logged_model_split(self):
         q = '到对面最后一条作物行去巡检'
         steps = compile_items(q, {'原文':q[:-3],'动作':'行驶'},

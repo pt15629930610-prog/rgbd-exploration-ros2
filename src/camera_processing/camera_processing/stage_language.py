@@ -102,10 +102,21 @@ def scoped_plan(server, text, diagnostics):
         raise ValueError('请明确在哪段运动中启用监测')
     tail = re.search(SEQUENTIAL+r'|[，,；;]\s*(?=(?:如果|若|要是|如果行末))', remaining)
     chunks = (prefix, remaining[:tail.start()] if tail else remaining, remaining[tail.start():] if tail else '')
+    # A complete trigger/response can be followed directly by a destination.
+    implicit_tail = None
+    for boundary in re.finditer(r'[，,；;。]\s*(?=(?:到|去|前往|驶向|进入|穿过|沿着))', chunks[1]):
+        condition = remaining[:boundary.start()]
+        try:
+            split_rule(condition)
+        except ValueError:
+            continue
+        implicit_tail = remaining[boundary.end():]
+        chunks = (prefix, condition, implicit_tail)
+        break
     answer = lang.ask(server, PROMPT, text, SCHEMA, 520)
     quoted = tuple(str(answer.get(k, '')).strip(SEP) for k in PARTS)
     # Exact coverage prevents a small model from dropping a speed, recovery or destination.
-    if (all(isinstance(answer.get(k), str) for k in PARTS)
+    if (implicit_tail is None and all(isinstance(answer.get(k), str) for k in PARTS)
             and lang._compact(''.join(quoted)) == lang._compact(text)
             and quoted[0] and quoted[1]
             and lang._compact(quoted[0]) == lang._compact(prefix)
