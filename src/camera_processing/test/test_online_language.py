@@ -11,6 +11,16 @@ def compile_items(text, *items):
 
 
 class LanguageTests(unittest.TestCase):
+    def test_pasted_build_command_never_starts_motion(self):
+        q = ('source /opt/ros/humble/setup.bash && colcon build --packages-select '
+             'camera_processing --symlink-install && source install/setup.bash以1米/秒的速度行驶，先右拐')
+        with patch('camera_processing.online_language.ask') as model:
+            with self.assertRaisesRegex(ValueError, '终端命令'):
+                interpret_online('unused', q)
+            model.assert_not_called()
+        result = compile_items('天气晴朗', {'原文':'天气晴朗','动作':'行驶'})
+        self.assertEqual(result[0]['do'], 'unsupported')
+
     def test_retry_logged_merged_turn_and_traverse(self):
         for text, expected in [('先右拐穿过最后一条行作物', ['turn','seek','enter','traverse_row']),
                                ('穿过最后一条行作物再右拐', ['seek','enter','traverse_row','turn'])]:

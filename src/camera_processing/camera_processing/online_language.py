@@ -226,6 +226,8 @@ def expand(item, slots):
     if verb == '返回入口':
         return [{'do': 'home'}]
     if verb == '行驶':
+        if not re.search(r'走|行驶|行进|直行|前进|前往|向前|往前|前行|移动|挪|开|驶|退|倒车', quote) and 'distance' not in slots:
+            raise ValueError('这段原文没有明确的移动动作或距离')
         step = {'do': 'advance', 'distance': slots.get('distance', 1.)}
         if side:
             step['side'] = side
@@ -563,6 +565,8 @@ def interpret_span(server, instruction, diagnostics, prior=()):
 def interpret_online(server, instruction, diagnostics=None):
     if not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 600:
         raise ValueError('请输入 1～600 字的路线指令')
+    if re.search(r'&&|\bsource\s+\S+|\bcolcon\s+build\b|\bros2\s+(?:launch|run|topic)\b|setup\.bash', instruction):
+        raise ValueError('指令中含有终端命令。请在「指令 >」后只输入给小车的任务。')
     steps = _interpret_online(server, instruction, diagnostics)
     orders = row_orders(instruction)
     if orders and ([s['order'] for s in steps if 'order' in s] != orders
