@@ -217,6 +217,27 @@ class RoadView:
     def path_to(self, point, goal):
         return astar(self.walk, self.cell(point), self.cell(goal))
 
+    def aisle_bypass(self, point, yaw, origin, tried):
+        """Seek forward progress within the observed strip around the search aisle."""
+        yy, xx = np.ogrid[:self.walk.shape[0], :self.walk.shape[1]]
+        x = self.origin[0]+(xx+.5)*self.resolution-point[0]
+        y = self.origin[1]+(yy+.5)*self.resolution-point[1]
+        c, s = math.cos(yaw), math.sin(yaw)
+        along = x*c+y*s
+        lateral = -(x+point[0]-origin[0])*s+(y+point[1]-origin[1])*c
+        walk = self.walk & (along >= -.6) & (along <= 1.7) & (abs(lateral) <= 1.45)
+        paths = []
+        for forward in (1.35, .75):
+            for side in (0., -.6, .6, -1.15, 1.15):
+                goal = self.cell(offset(point, yaw, forward, side))
+                if goal not in tried:
+                    path = astar(walk, self.cell(point), goal)
+                    if path:
+                        paths.append(path)
+            if paths:
+                return min(paths, key=len)
+        return []
+
     def replan_after_turn(self, point, goal, failed):
         start, end = self.cell(point), self.cell(goal)
         walk = self.walk.copy()

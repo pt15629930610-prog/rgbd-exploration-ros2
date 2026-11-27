@@ -576,6 +576,7 @@ class MotionSkills:
         ordinal = step.get('ordinal', 1)
         counted, excluded, visited = [], [], []
         ordered_rows = []
+        failed_bypasses = set()
         reversed_search = False
         detours, tried = [], []
         tracker = JunctionTracker()
@@ -691,6 +692,13 @@ class MotionSkills:
             path = self.view.advance(self.here, yaw, .72)
             if (yield from self.drive_path(path)):
                 continue
+            if target == 'row':
+                bypass = self.view.aisle_bypass(self.here, yaw, origin, failed_bypasses)
+                if bypass:
+                    self.note('沿行口搜索方向受阻，从已知空闲侧绕行，再继续数行')
+                    if not (yield from self.drive_path(bypass)):
+                        failed_bypasses.add(bypass[-1])
+                    continue
             if rank_all:
                 yield from self.look(yaw)
                 if not self.view.observed_dead_end(self.here, yaw, banks=False):
