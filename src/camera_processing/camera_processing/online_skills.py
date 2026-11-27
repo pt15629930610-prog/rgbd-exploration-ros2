@@ -433,6 +433,23 @@ class MotionSkills:
                     return e
         return None
 
+    def row_bank_match(self, gate, yaw):
+        # The referent is a planted bank. The clearest individual plant can change
+        # between frames, especially when looking obliquely along the same bank.
+        recent = []
+        for e in self.images:
+            if e.point is None or not 0 <= self.now-e.stamp < 12.:
+                continue
+            along, lateral = components(gate, e.point, yaw)
+            if not (.05 < along < 4.8 and .35 < abs(lateral) < 2.1):
+                continue
+            for stamp, x, y in recent:
+                if (stamp < e.stamp and y*lateral > 0 and
+                        abs(y-lateral) <= .35 and abs(x-along) <= 1.25):
+                    return e
+            recent.append((e.stamp, along, lateral))
+        return None
+
     def confirm_row(self, gate, yaw, label):
         yield from self.look(yaw)
         self.vision_start('crop', label)
@@ -446,6 +463,8 @@ class MotionSkills:
             start, initial = self.now, self.responses
             while self.now-start < 15. and self.responses-initial < 4:
                 match = self.match(nearby)
+                if match is None and not label:
+                    match = self.row_bank_match(gate, yaw)
                 if match:
                     self.vision_key = None
                     return match.point
@@ -559,6 +578,16 @@ class MotionSkills:
                                     continue
                             verified_lane = True
                             crop = yield from self.confirm_row(j.point, angle, step.get('label', ''))
+                            if not crop:
+                                # Move only on an observed, traversable path and restore
+                                # the gate pose before testing another branch or counting.
+                                vantage = offset(j.point, angle, .65)
+                                if (self.view.clearance(j.point, angle, 1.2) >= 1.05
+                                        and self.view.path_to(self.here, vantage)):
+                                    self.note('行口作物证据不足，进入已测通道换位复核')
+                                    yield from self.travel(vantage)
+                                    crop = yield from self.confirm_row(j.point, angle, step.get('label', ''))
+                                    yield from self.travel(j.point)
                             if crop:
                                 break
                         if crop is None:
